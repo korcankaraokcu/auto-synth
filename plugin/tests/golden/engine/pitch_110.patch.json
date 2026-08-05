@@ -1,0 +1,163 @@
+{
+  "oscs": [
+    {
+      "enabled": true,
+      "waveform": "saw",
+      "semitones": 0,
+      "cents": 0.0,
+      "level": 1.0,
+      "pulse_width": 0.5,
+      "unison_voices": 1,
+      "unison_detune": 0.0,
+      "waveform_b": "saw",
+      "wave_morph": 0.0,
+      "reverb_send": 0.0,
+      "env_enabled": false,
+      "env": {
+        "attack": 0.005,
+        "decay": 0.3,
+        "sustain": 1.0,
+        "release": 0.1,
+        "curve": 0.0
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "lowpass",
+        "cutoff_hz": 8000.0,
+        "resonance": 0.707,
+        "env_amount": 0.0,
+        "env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0.3,
+          "release": 0.2,
+          "curve": 0.0
+        }
+      }
+    },
+    {
+      "enabled": false,
+      "waveform": "saw",
+      "semitones": 0,
+      "cents": 0.0,
+      "level": 0.0,
+      "pulse_width": 0.5,
+      "unison_voices": 1,
+      "unison_detune": 0.0,
+      "waveform_b": "saw",
+      "wave_morph": 0.0,
+      "reverb_send": 0.0,
+      "env_enabled": false,
+      "env": {
+        "attack": 0.005,
+        "decay": 0.3,
+        "sustain": 1.0,
+        "release": 0.1,
+        "curve": 0.0
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "lowpass",
+        "cutoff_hz": 8000.0,
+        "resonance": 0.707,
+        "env_amount": 0.0,
+        "env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0.3,
+          "release": 0.2,
+          "curve": 0.0
+        }
+      }
+    },
+    {
+      "enabled": false,
+      "waveform": "saw",
+      "semitones": 0,
+      "cents": 0.0,
+      "level": 0.0,
+      "pulse_width": 0.5,
+      "unison_voices": 1,
+      "unison_detune": 0.0,
+      "waveform_b": "saw",
+      "wave_morph": 0.0,
+      "reverb_send": 0.0,
+      "env_enabled": false,
+      "env": {
+        "attack": 0.005,
+        "decay": 0.3,
+        "sustain": 1.0,
+        "release": 0.1,
+        "curve": 0.0
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "lowpass",
+        "cutoff_hz": 8000.0,
+        "resonance": 0.707,
+        "env_amount": 0.0,
+        "env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0.3,
+          "release": 0.2,
+          "curve": 0.0
+        }
+      }
+    }
+  ],
+  "amp_env": {
+    "attack": 0.01,
+    "decay": 0.2,
+    "sustain": 0.7,
+    "release": 0.2,
+    "curve": 0.0
+  },
+  "filter": {
+    "type": "off",
+    "cutoff_hz": 8000.0,
+    "resonance": 0.707,
+    "env_amount": 0.0,
+    "env": {
+      "attack": 0.005,
+      "decay": 0.3,
+      "sustain": 0.3,
+      "release": 0.2,
+      "curve": 0.0
+    }
+  },
+  "lfos": [
+    {
+      "shape": "sine",
+      "dest": "none",
+      "rate_hz": 5.0,
+      "depth": 0.0,
+      "delay": 0.0,
+      "phase": 0.0
+    },
+    {
+      "shape": "sine",
+      "dest": "none",
+      "rate_hz": 5.0,
+      "depth": 0.0,
+      "delay": 0.0,
+      "phase": 0.0
+    }
+  ],
+  "delay": {
+    "enabled": false,
+    "time": 0.25,
+    "feedback": 0.35,
+    "mix": 0.0
+  },
+  "reverb": {
+    "enabled": false,
+    "size": 0.5,
+    "damp": 0.5,
+    "level": 0.0
+  },
+  "noise_level": 0.0,
+  "master_level": 0.8,
+  "root_hz": 110.0,
+  "name": "golden"
+}

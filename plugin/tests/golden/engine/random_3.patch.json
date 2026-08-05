@@ -1,0 +1,163 @@
+{
+  "oscs": [
+    {
+      "enabled": false,
+      "waveform": "square",
+      "semitones": 19,
+      "cents": -2.3411578294229543,
+      "level": 0.25615002142789234,
+      "pulse_width": 0.11539251378348889,
+      "unison_voices": 1,
+      "unison_detune": 28.99850902820474,
+      "waveform_b": "triangle",
+      "wave_morph": 0.9755329784268204,
+      "reverb_send": 0.10747722838614726,
+      "env_enabled": false,
+      "env": {
+        "attack": 0.020080930276051928,
+        "decay": 0.02362605018340839,
+        "sustain": 0.7487557250039351,
+        "release": 0.36957522817740596,
+        "curve": 5.806061480414959
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "lowpass",
+        "cutoff_hz": 834.2498940515073,
+        "resonance": 1.6322754943170315,
+        "env_amount": -3.675059505018038,
+        "env": {
+          "attack": 0.004370090678731968,
+          "decay": 2.7698841063033734,
+          "sustain": 0.1625697247533182,
+          "release": 1.4878344114925541,
+          "curve": 6.577097272515521
+        }
+      }
+    },
+    {
+      "enabled": false,
+      "waveform": "saw",
+      "semitones": 12,
+      "cents": 18.068632557021246,
+      "level": 0.8369437364290709,
+      "pulse_width": 0.7318369272489114,
+      "unison_voices": 5,
+      "unison_detune": 45.648705300343906,
+      "waveform_b": "square",
+      "wave_morph": 0.17906268758299326,
+      "reverb_send": 0.7482242750812449,
+      "env_enabled": false,
+      "env": {
+        "attack": 0.025454479626408965,
+        "decay": 0.07092125877509214,
+        "sustain": 0.20216809397548463,
+        "release": 2.6411491910415115,
+        "curve": 0.7582134268893359
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "lowpass",
+        "cutoff_hz": 16965.237058858085,
+        "resonance": 1.041584953956569,
+        "env_amount": 2.6455541241418477,
+        "env": {
+          "attack": 0.0037278060468452956,
+          "decay": 0.2519295638147485,
+          "sustain": 0.958409335179392,
+          "release": 0.601273967398169,
+          "curve": 7.8440638014278905
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "waveform": "pulse",
+      "semitones": 19,
+      "cents": 27.824822610192825,
+      "level": 0.8884898869115002,
+      "pulse_width": 0.618342365535455,
+      "unison_voices": 3,
+      "unison_detune": 26.41412200284965,
+      "waveform_b": "triangle",
+      "wave_morph": 0.7775441238817054,
+      "reverb_send": 0.17007850161486648,
+      "env_enabled": true,
+      "env": {
+        "attack": 0.0587514299265773,
+        "decay": 0.4462356931509754,
+        "sustain": 0.76048659866525,
+        "release": 0.010418621017974857,
+        "curve": 4.999527693343868
+      },
+      "filter_enabled": false,
+      "filter": {
+        "type": "highpass",
+        "cutoff_hz": 2541.647281881253,
+        "resonance": 2.534881564977037,
+        "env_amount": 1.8630886148697217,
+        "env": {
+          "attack": 0.052073764241781416,
+          "decay": 0.11033591637620263,
+          "sustain": 0.2867688654485352,
+          "release": 0.02313225243656318,
+          "curve": 5.562416848734547
+        }
+      }
+    }
+  ],
+  "amp_env": {
+    "attack": 0.1979538915712349,
+    "decay": 0.01847027367239255,
+    "sustain": 0.9718374166111121,
+    "release": 0.44399810277334,
+    "curve": 4.24972898567861
+  },
+  "filter": {
+    "type": "bandpass",
+    "cutoff_hz": 674.1376842330886,
+    "resonance": 1.8709609926688147,
+    "env_amount": -1.933804799379705,
+    "env": {
+      "attack": 0.003276482913185146,
+      "decay": 0.5819270985552184,
+      "sustain": 0.8441109682390425,
+      "release": 0.46417404250070693,
+      "curve": 2.9505721335676016
+    }
+  },
+  "lfos": [
+    {
+      "shape": "saw",
+      "dest": "amp",
+      "rate_hz": 13.676379375162742,
+      "depth": 0.3876742119556893,
+      "delay": 0.329565304132007,
+      "phase": 0.8769328933290108
+    },
+    {
+      "shape": "square",
+      "dest": "none",
+      "rate_hz": 0.16396865124177604,
+      "depth": 0.6362836535994598,
+      "delay": 1.5776903112696758,
+      "phase": 0.6066925067405504
+    }
+  ],
+  "delay": {
+    "enabled": false,
+    "time": 0.014134009853471597,
+    "feedback": 0.468388246424309,
+    "mix": 0.19181714813525463
+  },
+  "reverb": {
+    "enabled": false,
+    "size": 0.1176415752621991,
+    "damp": 0.5059726340651836,
+    "level": 0.8155104066590114
+  },
+  "noise_level": 0.0,
+  "master_level": 0.6991677755491177,
+  "root_hz": 220.0,
+  "name": "rand3"
+}

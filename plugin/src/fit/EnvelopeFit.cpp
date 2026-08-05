@@ -1,0 +1,276 @@
+#include "fit/EnvelopeFit.h"
+
+#include "dsp/Envelope.h"
+#include "fit/NdFilters.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace autosynth
+{
+namespace
+{
+const float kCurveCandidates[] = { 0.0f, 0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f };
+
+double meanDiff (const std::vector<float>& times)
+{
+    if (times.size() < 2)
+        return 1.0e-3;
+    double sum = 0.0;
+    for (size_t i = 1; i < times.size(); ++i)
+        sum += times[i] - times[i - 1];
+    const auto dt = sum / static_cast<double> (times.size() - 1);
+    return dt > 0.0 ? dt : 1.0e-3;
+}
+} // namespace
+
+int EnvelopeFit::peakIndex (const std::vector<float>& curve, float frac)
+{
+    if (curve.empty())
+        return 0;
+    const auto peak = *std::max_element (curve.begin(), curve.end());
+    if (peak <= 1.0e-12f)
+        return 0;
+    for (size_t i = 0; i < curve.size(); ++i)
+        if (curve[i] >= frac * peak)
+            return static_cast<int> (i);
+    return 0;
+}
+
+EnvelopeFit::Gate EnvelopeFit::detectGate (const std::vector<float>& rms,
+                                           const std::vector<float>& times,
+                                           float maxPlateauRangeDb, double minPlateauSeconds,
+                                           double rangeWindowSeconds, float levelFloor,
+                                           double smoothSeconds)
+{
+    Gate gate;
+    if (rms.size() < 4 || times.size() < 4)
+    {
+        gate.time = times.empty() ? 0.0 : times.back();
+        gate.oneShot = true;
+        return gate;
+    }
+
+    const auto peak = *std::max_element (rms.begin(), rms.end());
+    if (peak <= 1.0e-9f)
+    {
+        gate.time = times.back();
+        gate.oneShot = true;
+        return gate;
+    }
+
+    std::vector<float> norm (rms.size());
+    std::vector<float> db (rms.size());
+    for (size_t i = 0; i < rms.size(); ++i)
+    {
+        norm[i] = rms[i] / peak;
+        db[i] = static_cast<float> (20.0 * std::log10 (norm[i] + 1.0e-6));
+    }
+
+    const auto dt = meanDiff (times);
+
+    // Smooth before measuring: frame-to-frame RMS ripple of even 1% reads as
+    // ~16 dB/s across a 5 ms hop.
+    const auto span = std::max (1, static_cast<int> (std::lround (smoothSeconds / dt)));
+    if (span > 1)
+        db = nd::uniformFilter1d (db, span);
+
+    // The range window is longer than the plateau-length requirement on
+    // purpose. A slow pluck (-17 dB/s) spans only 2.6 dB over 150 ms, close
+    // enough to a vibrato tone's 0.6 dB ripple that no threshold separates
+    // them; over 250 ms the same pluck spans 4.4 dB and the gap is comfortable.
+    const auto window = std::max (3, static_cast<int> (std::lround (rangeWindowSeconds / dt)));
+    const auto upper = nd::maximumFilter1d (db, window);
+    const auto lower = nd::minimumFilter1d (db, window);
+
+    const auto peakI = peakIndex (norm);
+
+    int bestLength = 0, bestEnd = -1, run = 0;
+    for (size_t i = 0; i < db.size(); ++i)
+    {
+        const auto spread = upper[i] - lower[i];
+        const auto flat = (static_cast<int> (i) > peakI)
+                       && (spread < maxPlateauRangeDb)
+                       && (norm[i] > levelFloor);
+        run = flat ? run + 1 : 0;
+        if (run > bestLength)
+        {
+            bestLength = run;
+            bestEnd = static_cast<int> (i);
+        }
+    }
+
+    if (bestLength * dt >= minPlateauSeconds && bestEnd >= 0)
+    {
+        gate.time = times[static_cast<size_t> (bestEnd)];
+        gate.oneShot = false;
+    }
+    else
+    {
+        gate.time = times.back();
+        gate.oneShot = true;
+    }
+    return gate;
+}
+
+float EnvelopeFit::fitCurve (const std::vector<float>& observed, const std::vector<float>& times,
+                             const Adsr& env, double gateTime)
+{
+    if (observed.size() < 4)
+        return 0.0f;
+    const auto dt = meanDiff (times);
+    const auto peak = *std::max_element (observed.begin(), observed.end());
+    if (peak <= 1.0e-9f)
+        return 0.0f;
+
+    std::vector<float> target (observed.size());
+    for (size_t i = 0; i < observed.size(); ++i)
+        target[i] = std::max (-80.0f,
+                              static_cast<float> (20.0 * std::log10 (observed[i] / peak + 1.0e-12)));
+
+    auto best = std::numeric_limits<double>::infinity();
+    auto bestCurve = 0.0f;
+
+    for (auto candidate : kCurveCandidates)
+    {
+        auto trial = env;
+        trial.curve = candidate;
+
+        double error = 0.0;
+        for (size_t i = 0; i < observed.size(); ++i)
+        {
+            const auto value = Envelope::evaluate (trial, static_cast<double> (i) * dt, gateTime);
+            const auto modelDb = std::max (-80.0f,
+                                           static_cast<float> (20.0 * std::log10 (value + 1.0e-12)));
+            error += std::abs (modelDb - target[i]);
+        }
+        error /= static_cast<double> (observed.size());
+
+        if (error < best)
+        {
+            best = error;
+            bestCurve = candidate;
+        }
+    }
+    return bestCurve;
+}
+
+Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector<float>& times,
+                           double gateTime, float floor, bool oneShot)
+{
+    if (rawCurve.size() < 4 || times.size() < 4)
+        return { 0.01f, 0.1f, 0.5f, 0.1f, 0.0f };
+
+    const auto peak = *std::max_element (rawCurve.begin(), rawCurve.end());
+    if (peak <= 1.0e-9f)
+        return { 0.01f, 0.1f, 0.5f, 0.1f, 0.0f };
+
+    std::vector<float> curve (rawCurve.size());
+    for (size_t i = 0; i < rawCurve.size(); ++i)
+        curve[i] = rawCurve[i] / peak;
+
+    const auto firstAbove = [&curve] (float level)
+    {
+        for (size_t i = 0; i < curve.size(); ++i)
+            if (curve[i] > level)
+                return static_cast<int> (i);
+        return 0;
+    };
+
+    if (oneShot)
+    {
+        const auto peakI = peakIndex (curve);
+        const auto onsetI = firstAbove (floor);
+        const auto attack = std::max (times[static_cast<size_t> (peakI)]
+                                          - times[static_cast<size_t> (onsetI)], 1.0e-3f);
+
+        // Measure the decay down to -60 dB, not to the -26 dB onset floor. For
+        // a one-shot the decay *is* the whole sound, and ending it at 5% of
+        // peak cuts off a tail that is still plainly audible.
+        auto decay = std::max (times.back() - times[static_cast<size_t> (peakI)], 5.0e-3f);
+        for (size_t i = static_cast<size_t> (peakI); i < curve.size(); ++i)
+        {
+            if (curve[i] <= 0.001f)
+            {
+                decay = std::max (times[i] - times[static_cast<size_t> (peakI)], 5.0e-3f);
+                break;
+            }
+        }
+
+        Adsr env;
+        env.attack = juce::jlimit (0.001f, 2.0f, attack);
+        env.decay = juce::jlimit (0.005f, 4.0f, decay);
+        env.sustain = 0.0f;
+        env.release = juce::jlimit (0.005f, 4.0f, decay);
+        env.curve = fitCurve (curve, times, env, times.back());
+        return env;
+    }
+
+    auto gateI = 0;
+    while (gateI < static_cast<int> (times.size()) && times[static_cast<size_t> (gateI)] < gateTime)
+        ++gateI;
+    gateI = juce::jlimit (2, static_cast<int> (curve.size()) - 1, gateI);
+
+    const auto onsetI = firstAbove (floor);
+    std::vector<float> held (curve.begin(), curve.begin() + gateI);
+    const auto peakI = peakIndex (held);
+    const auto attack = std::max (times[static_cast<size_t> (peakI)]
+                                      - times[static_cast<size_t> (onsetI)], 1.0e-3f);
+
+    // Sustain: the level actually held just before note-off.
+    const auto tailLo = std::max (peakI + 1, static_cast<int> (gateI * 0.8));
+    float sustain;
+    if (tailLo < gateI)
+    {
+        std::vector<float> tail (held.begin() + tailLo, held.begin() + gateI);
+        std::sort (tail.begin(), tail.end());
+        const auto mid = tail.size() / 2;
+        sustain = (tail.size() % 2 == 1) ? tail[mid] : 0.5f * (tail[mid - 1] + tail[mid]);
+    }
+    else
+    {
+        sustain = held.back();
+    }
+    sustain = juce::jlimit (0.0f, 1.0f, sustain);
+
+    // Decay: peak -> within 10% of the sustain level.
+    const auto target = sustain + 0.1f * (1.0f - sustain);
+    auto decay = std::max (times[static_cast<size_t> (gateI - 1)]
+                               - times[static_cast<size_t> (peakI)], 5.0e-3f);
+    for (int i = peakI; i < gateI; ++i)
+    {
+        if (held[static_cast<size_t> (i)] <= target)
+        {
+            decay = std::max (times[static_cast<size_t> (i)]
+                                  - times[static_cast<size_t> (peakI)], 5.0e-3f);
+            break;
+        }
+    }
+
+    // Release: note-off -> effectively silent.
+    const auto levelAtGate = curve[static_cast<size_t> (gateI - 1)];
+    auto release = 5.0e-3f;
+    if (gateI < static_cast<int> (curve.size()) && levelAtGate > 1.0e-6f)
+    {
+        release = std::max (times.back() - times[static_cast<size_t> (gateI)], 5.0e-3f);
+        for (size_t i = static_cast<size_t> (gateI); i < curve.size(); ++i)
+        {
+            if (curve[i] <= floor * levelAtGate)
+            {
+                release = std::max (times[i] - times[static_cast<size_t> (gateI)], 5.0e-3f);
+                break;
+            }
+        }
+    }
+
+    Adsr env;
+    env.attack = juce::jlimit (0.001f, 2.0f, attack);
+    env.decay = juce::jlimit (0.005f, 4.0f, decay);
+    env.sustain = sustain;
+    env.release = juce::jlimit (0.005f, 4.0f, release);
+    env.curve = fitCurve (curve, times, env, gateTime);
+    return env;
+}
+
+} // namespace autosynth

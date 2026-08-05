@@ -1,0 +1,588 @@
+{
+ "generated_by": "autosynth python reference (frozen at the C++ cut-over)",
+ "sample_rate": 48000,
+ "hop": 256,
+ "fft": 2048,
+ "dur": 1.0,
+ "gate": 0.7,
+ "engine": [
+  {
+   "name": "wave_sine",
+   "patch": "wave_sine.patch.json",
+   "reference": "wave_sine.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7997470642547202,
+   "silent": false
+  },
+  {
+   "name": "wave_triangle",
+   "patch": "wave_triangle.patch.json",
+   "reference": "wave_triangle.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7996190219043893,
+   "silent": false
+  },
+  {
+   "name": "wave_saw",
+   "patch": "wave_saw.patch.json",
+   "reference": "wave_saw.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7800163697137753,
+   "silent": false
+  },
+  {
+   "name": "wave_square",
+   "patch": "wave_square.patch.json",
+   "reference": "wave_square.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7819429467697102,
+   "silent": false
+  },
+  {
+   "name": "wave_pulse",
+   "patch": "wave_pulse.patch.json",
+   "reference": "wave_pulse.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7969408934503699,
+   "silent": false
+  },
+  {
+   "name": "pitch_55",
+   "patch": "pitch_55.patch.json",
+   "reference": "pitch_55.ref.wav",
+   "note_hz": 55.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.752021391118099,
+   "silent": false
+  },
+  {
+   "name": "pitch_110",
+   "patch": "pitch_110.patch.json",
+   "reference": "pitch_110.ref.wav",
+   "note_hz": 110.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7736377884308571,
+   "silent": false
+  },
+  {
+   "name": "pitch_220",
+   "patch": "pitch_220.patch.json",
+   "reference": "pitch_220.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7800163697137753,
+   "silent": false
+  },
+  {
+   "name": "pitch_440",
+   "patch": "pitch_440.patch.json",
+   "reference": "pitch_440.ref.wav",
+   "note_hz": 440.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7819120746289845,
+   "silent": false
+  },
+  {
+   "name": "pitch_880",
+   "patch": "pitch_880.patch.json",
+   "reference": "pitch_880.ref.wav",
+   "note_hz": 880.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7965550933392653,
+   "silent": false
+  },
+  {
+   "name": "unison",
+   "patch": "unison.patch.json",
+   "reference": "unison.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.4933379443396289,
+   "silent": false
+  },
+  {
+   "name": "ampenv_curve0",
+   "patch": "ampenv_curve0.patch.json",
+   "reference": "ampenv_curve0.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7908751239288344,
+   "silent": false
+  },
+  {
+   "name": "ampenv_curve1",
+   "patch": "ampenv_curve1.patch.json",
+   "reference": "ampenv_curve1.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7884179930073612,
+   "silent": false
+  },
+  {
+   "name": "osc_env",
+   "patch": "osc_env.patch.json",
+   "reference": "osc_env.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.6834405929385885,
+   "silent": false
+  },
+  {
+   "name": "filter_lp400",
+   "patch": "filter_lp400.patch.json",
+   "reference": "filter_lp400.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.23091530205035427,
+   "silent": false
+  },
+  {
+   "name": "filter_lp1200",
+   "patch": "filter_lp1200.patch.json",
+   "reference": "filter_lp1200.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.4273776901936544,
+   "silent": false
+  },
+  {
+   "name": "filter_lp4000",
+   "patch": "filter_lp4000.patch.json",
+   "reference": "filter_lp4000.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.5683511499644891,
+   "silent": false
+  },
+  {
+   "name": "filter_highpass",
+   "patch": "filter_highpass.patch.json",
+   "reference": "filter_highpass.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.6260459223372309,
+   "silent": false
+  },
+  {
+   "name": "filter_bandpass",
+   "patch": "filter_bandpass.patch.json",
+   "reference": "filter_bandpass.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.6106998694824389,
+   "silent": false
+  },
+  {
+   "name": "filter_env",
+   "patch": "filter_env.patch.json",
+   "reference": "filter_env.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.4582252027408193,
+   "silent": false
+  },
+  {
+   "name": "lfo_pitch",
+   "patch": "lfo_pitch.patch.json",
+   "reference": "lfo_pitch.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7849763876343872,
+   "silent": false
+  },
+  {
+   "name": "lfo_amp",
+   "patch": "lfo_amp.patch.json",
+   "reference": "lfo_amp.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.0527246566617654,
+   "silent": false
+  },
+  {
+   "name": "lfo_cutoff",
+   "patch": "lfo_cutoff.patch.json",
+   "reference": "lfo_cutoff.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.6457002359040169,
+   "silent": false
+  },
+  {
+   "name": "lfo_both",
+   "patch": "lfo_both.patch.json",
+   "reference": "lfo_both.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.989862569016557,
+   "silent": false
+  },
+  {
+   "name": "delay_120",
+   "patch": "delay_120.patch.json",
+   "reference": "delay_120.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7329770835915329,
+   "silent": false
+  },
+  {
+   "name": "delay_250",
+   "patch": "delay_250.patch.json",
+   "reference": "delay_250.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7329770835915329,
+   "silent": false
+  },
+  {
+   "name": "reverb_30",
+   "patch": "reverb_30.patch.json",
+   "reference": "reverb_30.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.8925968586514781,
+   "silent": false
+  },
+  {
+   "name": "reverb_85",
+   "patch": "reverb_85.patch.json",
+   "reference": "reverb_85.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.2692665751246488,
+   "silent": false
+  },
+  {
+   "name": "reverb_damped",
+   "patch": "reverb_damped.patch.json",
+   "reference": "reverb_damped.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.2047900128898055,
+   "silent": false
+  },
+  {
+   "name": "osc_filter",
+   "patch": "osc_filter.patch.json",
+   "reference": "osc_filter.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.8865715875583698,
+   "silent": false
+  },
+  {
+   "name": "morph",
+   "patch": "morph.patch.json",
+   "reference": "morph.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.7800312870849931,
+   "silent": false
+  },
+  {
+   "name": "multi_osc",
+   "patch": "multi_osc.patch.json",
+   "reference": "multi_osc.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.5015519797662082,
+   "silent": false
+  },
+  {
+   "name": "random_0",
+   "patch": "random_0.patch.json",
+   "reference": "random_0.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.017196764849139262,
+   "silent": false
+  },
+  {
+   "name": "random_1",
+   "patch": "random_1.patch.json",
+   "reference": "random_1.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.3692364111567155,
+   "silent": false
+  },
+  {
+   "name": "random_2",
+   "patch": "random_2.patch.json",
+   "reference": "random_2.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.23482834835046895,
+   "silent": false
+  },
+  {
+   "name": "random_3",
+   "patch": "random_3.patch.json",
+   "reference": "random_3.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.15716326540358788,
+   "silent": false
+  },
+  {
+   "name": "random_4",
+   "patch": "random_4.patch.json",
+   "reference": "random_4.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.09377237613276954,
+   "silent": false
+  },
+  {
+   "name": "random_5",
+   "patch": "random_5.patch.json",
+   "reference": "random_5.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.523465496335491,
+   "silent": false
+  },
+  {
+   "name": "random_6",
+   "patch": "random_6.patch.json",
+   "reference": "random_6.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 0.2677324074442557,
+   "silent": false
+  },
+  {
+   "name": "random_7",
+   "patch": "random_7.patch.json",
+   "reference": "random_7.ref.wav",
+   "note_hz": 220.0,
+   "dur": 1.0,
+   "gate": 0.7,
+   "sample_rate": 48000,
+   "peak": 1.0855160044814798,
+   "silent": false
+  }
+ ],
+ "analysis": [
+  {
+   "name": "tone_saw_220",
+   "input": "tone_saw_220.wav",
+   "golden": "tone_saw_220.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_sine_220",
+   "input": "tone_sine_220.wav",
+   "golden": "tone_sine_220.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_square_220",
+   "input": "tone_square_220.wav",
+   "golden": "tone_square_220.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_triangle_220",
+   "input": "tone_triangle_220.wav",
+   "golden": "tone_triangle_220.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_saw_110",
+   "input": "tone_saw_110.wav",
+   "golden": "tone_saw_110.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_saw_440",
+   "input": "tone_saw_440.wav",
+   "golden": "tone_saw_440.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "tone_saw_880",
+   "input": "tone_saw_880.wav",
+   "golden": "tone_saw_880.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "noise",
+   "input": "noise.wav",
+   "golden": "noise.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "silence",
+   "input": "silence.wav",
+   "golden": "silence.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "two_sources_fifth",
+   "input": "two_sources_fifth.wav",
+   "golden": "two_sources_fifth.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "two_sources_octave",
+   "input": "two_sources_octave.wav",
+   "golden": "two_sources_octave.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "pluck",
+   "input": "pluck.wav",
+   "golden": "pluck.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "sustained",
+   "input": "sustained.wav",
+   "golden": "sustained.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "lfo_pitch",
+   "input": "lfo_pitch.wav",
+   "golden": "lfo_pitch.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "lfo_amp",
+   "input": "lfo_amp.wav",
+   "golden": "lfo_amp.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "lfo_cutoff",
+   "input": "lfo_cutoff.wav",
+   "golden": "lfo_cutoff.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  },
+  {
+   "name": "unmodulated",
+   "input": "unmodulated.wav",
+   "golden": "unmodulated.golden.json",
+   "sample_rate": 48000,
+   "hop": 256,
+   "fft": 2048
+  }
+ ]
+}

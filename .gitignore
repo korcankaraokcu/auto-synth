@@ -1,0 +1,29 @@
+# Build output. JUCE and Catch2 are fetched at configure time, not vendored,
+# so there is nothing to check in for either.
+plugin/build/
+build/
+dist/
+
+# Generated audio and reports
+demo/
+out/
+reports/
+*.wav
+
+# ...except the golden fixtures, which are reference data the test suite needs
+# in order to mean anything. They were produced by the Python implementation
+# this engine was validated against, and checked in when that implementation
+# was removed -- so this exception is what keeps the evidence alive.
+!plugin/tests/golden/**/*.wav
+
+# Editors, tooling and OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
+
+# Local assistant/tooling notes — not part of the project
+CLAUDE.md
+.claude/
