@@ -3889,26 +3889,26 @@
  ],
  "groups": [
   {
-   "f0": 219.82570263459684,
-   "salience": 337.0708060597742,
-   "energy": 337.07080605977427,
+   "f0": 220.00129011131628,
+   "salience": 337.0605103839189,
+   "energy": 337.0605163574219,
    "num_partials": 117,
    "num_harmonics": 32,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.2870510150065785
+   "detune_cents": 0.28705119999739
   }
  ],
  "gate": {
-  "time": 1.9786666666666666,
+  "time": 1.978666663169861,
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.016,
-  "decay": 0.112,
-  "sustain": 0.9170437882492449,
-  "release": 0.005,
-  "curve": 0.0
+  "attack": 0.001000000047497,
+  "decay": 0.004999999888241,
+  "sustain": 0.91704386472702,
+  "release": 0.004999999888241,
+  "curve": 8.0
  },
  "waveform_fit": {
   "waveform": "saw",

@@ -2271,34 +2271,34 @@
  ],
  "groups": [
   {
-   "f0": 219.94640152477305,
-   "salience": 179.60947297937912,
-   "energy": 299.34912163229853,
+   "f0": 220.0021261933426,
+   "salience": 179.60398550033565,
+   "energy": 299.3399658203125,
    "num_partials": 16,
    "num_harmonics": 31,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.6246175490865661
+   "detune_cents": 0.624632257143918
   },
   {
-   "f0": 1842.47832009571,
-   "salience": 21.32586969473456,
-   "energy": 35.54311615789095,
+   "f0": 1840.950854817567,
+   "salience": 21.325218343734736,
+   "energy": 35.542030334472656,
    "num_partials": 19,
    "num_harmonics": 13,
    "unison_voices": 2,
    "unison_detune": 50.0,
-   "detune_cents": 28.648386541487955
+   "detune_cents": 28.64838757258415
   },
   {
-   "f0": 1952.5201006501554,
-   "salience": 17.004510009637,
-   "energy": 28.340850016061673,
-   "num_partials": 15,
+   "f0": 1936.4323632992541,
+   "salience": 17.00399072170257,
+   "energy": 26.622730255126953,
+   "num_partials": 14,
    "num_harmonics": 12,
    "unison_voices": 2,
-   "unison_detune": 43.33502207114671,
-   "detune_cents": 27.937784355767942
+   "unison_detune": 43.334922790527344,
+   "detune_cents": 24.34137616408432
   }
  ],
  "gate": {

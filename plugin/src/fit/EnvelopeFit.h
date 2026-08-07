@@ -36,7 +36,11 @@ public:
                             double minPlateauSeconds = 0.15,
                             double rangeWindowSeconds = 0.25,
                             float levelFloor = 0.1f,
-                            double smoothSeconds = 0.05);
+                            double smoothSeconds = 0.05,
+                            // Roughly one vibrato period. Flatness is measured
+                            // on a copy smoothed this far, so a played note's
+                            // natural swing does not disqualify its sustain.
+                            double plateauSmoothSeconds = 0.25);
 
     // With `oneShot` the sound never sustains, so sustain is pinned to zero and
     // release mirrors the decay. Without that pin the fitter reads the tail of a

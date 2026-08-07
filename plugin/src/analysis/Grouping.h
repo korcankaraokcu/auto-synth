@@ -29,6 +29,11 @@ struct HarmonicGroup
     double salience = 0.0;
     std::vector<Partial> partials;
 
+    // Frames per second of `H`. Carried on the group because the unison
+    // estimator reads beat *rates* out of the harmonic envelopes, and a rate
+    // is meaningless without knowing how fast the frames go by.
+    double frameRateHz = 0.0;
+
     const float* harmonic (int k) const noexcept
     {
         return H.data() + static_cast<size_t> (k) * static_cast<size_t> (numFrames);
@@ -58,6 +63,24 @@ public:
     // 2048-point window a 20-cent spread on a 220 Hz source does not separate
     // until roughly the eighteenth harmonic. The spread is recovered well
     // whenever anything resolves at all; only the count is short.
+    // Evidence that a group's harmonics are beating, which is what narrow
+    // unison looks like once the voices stop resolving into separate peaks.
+    //
+    // The test is not merely "are the harmonic envelopes periodic" -- tremolo
+    // and vibrato are periodic too, and every LFO in the test set would trip
+    // it. The test is whether the rate rises *in proportion to harmonic
+    // number*, which only a frequency gap between detuned partials does.
+    struct UnisonBeating
+    {
+        bool found = false;
+        double detuneCents = 0.0;
+        double beatRateAtFundamental = 0.0;
+        double proportionalFit = 0.0;   // 1 is a perfect rate ∝ k relationship
+        int harmonicsAgreeing = 0;
+    };
+
+    static UnisonBeating detectUnisonBeating (const HarmonicGroup& group, int minHarmonic = 2);
+
     static void estimateUnison (const HarmonicGroup& group, int& voicesOut, float& detuneOut,
                                 int maxVoices = 7, int minHarmonic = 2);
 

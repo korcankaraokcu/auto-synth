@@ -92,7 +92,8 @@ int main (int argc, char* argv[])
     const auto args = parseArgs (argc, argv);
     if (args.positional.isEmpty())
     {
-        std::fprintf (stderr, "usage: autosynth_probe <input.wav> [--hop n] [--fft n]\n");
+        std::fprintf (stderr, "usage: autosynth_probe <input.wav> [--hop n] [--fft n] "
+                              "[--refine 1] [--patch out.json]\n");
         return 2;
     }
 
@@ -277,6 +278,7 @@ int main (int argc, char* argv[])
 
     // Refinement, only when asked: it costs ~8s per second of audio.
     juce::var refineVar;
+    auto finalPatch = fitted;
     if (args.value ("--refine", 0.0) > 0.0)
     {
         autosynth::Refine::Options refineOptions;
@@ -292,6 +294,21 @@ int main (int argc, char* argv[])
         obj->setProperty ("master_level", refined.patch.masterLevel);
         obj->setProperty ("active_oscs", refined.patch.activeOscCount());
         refineVar = juce::var (obj);
+        finalPatch = refined.patch;
+    }
+
+    // Write the fitted patch out, so a real sample can be taken end to end from
+    // the command line: probe it, render the patch, compare the two files. The
+    // plugin could already do this by drag and drop, but not in a form that can
+    // be measured or scripted.
+    if (const auto it = args.options.find ("--patch"); it != args.options.end()
+        && it->second.isNotEmpty())
+    {
+        const juce::File out (juce::File::getCurrentWorkingDirectory()
+                                  .getChildFile (it->second));
+        if (! out.replaceWithText (finalPatch.toJson()))
+            std::fprintf (stderr, "warning: could not write %s\n",
+                          out.getFullPathName().toRawUTF8());
     }
 
     const auto trajectories = autosynth::Modulation::extract (samples, numSamples, sampleRate, hop);

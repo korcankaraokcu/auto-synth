@@ -2265,24 +2265,24 @@
  ],
  "groups": [
   {
-   "f0": 439.65081621904693,
-   "salience": 259.92634186808186,
-   "energy": 259.9263418680818,
+   "f0": 439.9992454557995,
+   "salience": 259.91840040683746,
+   "energy": 259.91839599609375,
    "num_partials": 32,
    "num_harmonics": 32,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.27510217860229563
+   "detune_cents": 0.275097436435318
   },
   {
-   "f0": 1925.0157491857558,
-   "salience": 3.736456818761756,
-   "energy": 18.682284093808796,
+   "f0": 1934.7034477106415,
+   "salience": 3.73634269237518,
+   "energy": 18.681713104248047,
    "num_partials": 13,
    "num_harmonics": 12,
    "unison_voices": 3,
    "unison_detune": 50.0,
-   "detune_cents": 29.337918923720363
+   "detune_cents": 29.33793417379351
   }
  ],
  "gate": {

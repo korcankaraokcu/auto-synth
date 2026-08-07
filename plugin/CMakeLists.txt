@@ -37,7 +37,8 @@ add_library(autosynth_dsp STATIC
     src/fit/PartialFit.cpp
     src/fit/CmaEs.cpp
     src/fit/Refine.cpp
-    src/fit/EffectsFit.cpp)
+    src/fit/EffectsFit.cpp
+    src/eval/Recovery.cpp)
 
 target_include_directories(autosynth_dsp PUBLIC src)
 target_link_libraries(autosynth_dsp
@@ -128,6 +129,19 @@ target_link_libraries(autosynth_probe
     PUBLIC juce::juce_recommended_config_flags)
 
 # --------------------------------------------------------------------------
+# Ground-truth recovery harness: how good is the fitter?
+#
+# The golden fixtures prove behaviour has not drifted. They say nothing about
+# whether a fit is any *good*. This is the measurement that does, and every
+# remaining item on the roadmap is a fitter change that needs it.
+# --------------------------------------------------------------------------
+juce_add_console_app(autosynth_eval PRODUCT_NAME "autosynth_eval")
+target_sources(autosynth_eval PRIVATE tools/eval_main.cpp)
+target_link_libraries(autosynth_eval
+    PRIVATE autosynth_dsp juce::juce_audio_formats
+    PUBLIC juce::juce_recommended_config_flags)
+
+# --------------------------------------------------------------------------
 # Tests
 #
 # Built on Catch2, fetched and pinned the same way JUCE is. Enabled by default
@@ -157,6 +171,8 @@ if(AUTOSYNTH_BUILD_TESTS)
         tests/test_analysis.cpp
         tests/test_fit.cpp
         tests/test_capabilities.cpp
+        tests/test_recovery.cpp
+        tests/test_unison.cpp
         tests/test_golden_engine.cpp
         tests/test_golden_analysis.cpp)
 

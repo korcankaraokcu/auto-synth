@@ -177,6 +177,23 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
         if (i != loudest && patch.oscs[static_cast<size_t> (active[i])].level <= 1.0e-3f)
             patch.oscs[static_cast<size_t> (active[i])].enabled = false;
 
+    // Noise is a colouring on a pitched patch, never a co-equal source.
+    //
+    // The least-squares solve will happily hand the noise column a large gain,
+    // because broadband energy fits the low-level content a real recording is
+    // full of -- room tone, bow and breath noise, the diffuse part of a reverb.
+    // On a violin it came back at 0.18 and the result hissed; refinement then
+    // pushed it to 0.41 and the patch was unlistenable, which no distance
+    // metric here objected to because filling empty bins genuinely lowers a
+    // log-spectral error.
+    //
+    // The mistake is modelling: our noise is flat, static and untuned, so it
+    // stands in badly for content that is shaped and correlated with the note.
+    // Until it is a better model, a pitched fit gets a bounded amount of it.
+    // A sound that really is broadband takes the other branch in `fit`, which
+    // proposes no oscillators at all and is not capped here.
+    patch.noiseLevel = juce::jmin (patch.noiseLevel, kMaxPitchedNoise);
+
     return patch;
 }
 
@@ -293,9 +310,16 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
         // a closed filter is not mistaken for a dull one.
         const auto flat = FilterFit::deconvolve (g.H, g.numHarmonics, g.numFrames,
                                                  trajectory.cutoffHz, g.f0);
-        const auto match = WaveformFit::match (meanProfile (flat, g.numHarmonics, g.numFrames));
-        osc.waveform = match.waveform;
-        osc.pulseWidth = match.pulseWidth;
+        // Blend of two shapes rather than the single best one. Five waveforms
+        // are a coarse net for a real instrument's harmonic profile, and the
+        // blend turns them into a continuum at the cost of one parameter that
+        // the IR, the engine, the editor and refinement all already supported
+        // but that nothing had ever set.
+        const auto blend = WaveformFit::matchBlend (meanProfile (flat, g.numHarmonics, g.numFrames));
+        osc.waveform = blend.waveform;
+        osc.waveformB = blend.waveformB;
+        osc.waveMorph = blend.morph;
+        osc.pulseWidth = blend.pulseWidth;
 
         // Unison is visible only because partials are tracked individually.
         Grouping::estimateUnison (g, osc.unisonVoices, osc.unisonDetune);
@@ -337,9 +361,52 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     for (size_t i = 0; i < detected.size() && i < patch.lfos.size(); ++i)
         patch.lfos[i] = detected[i];
 
-    // Delay is fitted, reverb is not -- see fit/EffectsFit.h for why only one
-    // half of "effects" is tractable this way.
-    patch.delay = EffectsFit::fitDelay (samples, numSamples, sampleRate, options.hop);
+    patch.delay = EffectsFit::fitDelay (samples, numSamples, sampleRate, options.hop, gateTime);
+
+    // Reverb, and the release it was hiding inside.
+    //
+    // These two are near-degenerate -- a tail and a long release draw the same
+    // curve -- so they are separated structurally rather than left for the
+    // optimiser to trade off. `detectReverb` measures the slow exponential on
+    // the later part of the decay, where the direct sound has gone, and reports
+    // where the handover happened. That handover is the release; everything
+    // after it belongs to the room.
+    //
+    // Without this the release absorbs the whole tail, which measured *better*
+    // on whole-file distance than a correct fit did, because a long release is
+    // the only way the patch could account for a room at all.
+    const auto reverb = EffectsFit::detectReverb (samples, numSamples, sampleRate,
+                                                  gateTime, options.hop);
+    patch.reverb = EffectsFit::fitReverb (samples, numSamples, sampleRate,
+                                          gateTime, options.hop);
+
+    // Shorten the release only when a reverb is actually taking the tail over.
+    //
+    // These are two different conditions: `detectReverb` can find a decay that
+    // `fitReverb` then declines to model, because the return works out too
+    // quiet to be worth switching on. Cutting the release on the first
+    // condition rather than the second threw the tail away with nothing to
+    // replace it, and cost about a decibel of loudness accuracy on every seed
+    // of the harness -- small, consistent, and easy to mistake for noise.
+    if (reverb.found && patch.reverb.enabled)
+    {
+        // Hand the tail to the reverb by cutting the release back to the direct
+        // sound's own decay. Left alone it would model the room twice.
+        const auto release = static_cast<float> (juce::jlimit (5.0e-3, 4.0,
+                                                               reverb.releaseSeconds));
+        patch.ampEnv.release = juce::jmin (patch.ampEnv.release, release);
+        for (auto& osc : patch.oscs)
+            if (osc.envEnabled)
+                osc.env.release = juce::jmin (osc.env.release, release);
+
+        // Everything audible feeds the room. Per-oscillator sends are a
+        // creative control; nothing in a single recording says one layer was
+        // further back than another, so inventing a difference would be
+        // fabricating structure the evidence does not support.
+        for (auto& osc : patch.oscs)
+            if (osc.enabled)
+                osc.reverbSend = 1.0f;
+    }
 
     double claimed = 0.0;
     for (const auto& g : groups)

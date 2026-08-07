@@ -2103,14 +2103,14 @@
  ],
  "groups": [
   {
-   "f0": 879.8392011357145,
-   "salience": 253.76121332410173,
-   "energy": 253.7612133241017,
+   "f0": 879.9989889505822,
+   "salience": 253.75346851348877,
+   "energy": 253.7534637451172,
    "num_partials": 27,
    "num_harmonics": 27,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.099223473586274
+   "detune_cents": 0.099232624859678
   }
  ],
  "gate": {

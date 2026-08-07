@@ -5341,26 +5341,26 @@
  ],
  "groups": [
   {
-   "f0": 220.13016083858946,
-   "salience": 474.90005476356805,
-   "energy": 474.9000547635681,
-   "num_partials": 228,
+   "f0": 221.3125502709118,
+   "salience": 474.8855569586158,
+   "energy": 475.0261535644531,
+   "num_partials": 229,
    "num_harmonics": 32,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 18.286644885590917
+   "detune_cents": 17.3717990953831
   }
  ],
  "gate": {
-  "time": 1.9786666666666666,
+  "time": 1.978666663169861,
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.010666666666666666,
-  "decay": 0.010666666666666666,
-  "sustain": 0.9606963447961978,
-  "release": 0.005,
-  "curve": 2.0
+  "attack": 0.010666666552424,
+  "decay": 0.010666666552424,
+  "sustain": 0.960696280002594,
+  "release": 0.004999999888241,
+  "curve": 3.0
  },
  "waveform_fit": {
   "waveform": "saw",

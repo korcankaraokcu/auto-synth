@@ -2013,14 +2013,14 @@
  ],
  "groups": [
   {
-   "f0": 219.9463990538201,
-   "salience": 69.61148427613195,
-   "energy": 116.01914046021994,
+   "f0": 220.02949203210807,
+   "salience": 69.60935833454131,
+   "energy": 116.01559448242188,
    "num_partials": 12,
    "num_harmonics": 23,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.7111498581931833
+   "detune_cents": 0.71115270501725
   }
  ],
  "gate": {

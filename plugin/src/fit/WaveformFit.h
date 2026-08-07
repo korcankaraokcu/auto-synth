@@ -32,6 +32,28 @@ public:
     // together.
     static Match match (const std::vector<float>& profile);
 
+    // A blend of two waveforms, which is a far larger space than five shapes.
+    //
+    // The IR has carried `waveform_b` and `wave_morph` since the oscillator
+    // capabilities went in, the engine crossfades them, the editor shows the
+    // knob and refinement searches the morph -- but nothing ever *chose* a
+    // second waveform, so it always equalled the first and the morph blended a
+    // shape into itself. The whole mechanism was inert.
+    //
+    // Cheap to search because the engine crossfades the two tables linearly, so
+    // the blend's harmonic profile is the same linear blend of theirs and can
+    // be evaluated in the harmonic domain without rendering anything.
+    struct Blend
+    {
+        Waveform waveform = Waveform::saw;
+        Waveform waveformB = Waveform::saw;
+        float morph = 0.0f;
+        float pulseWidth = 0.5f;
+        double error = 0.0;
+    };
+
+    static Blend matchBlend (const std::vector<float>& profile, int numMorphSteps = 17);
+
     // Jointly chooses waveform and lowpass cutoff.
     //
     // This is also the only thing that makes the *absolute* cutoff identifiable

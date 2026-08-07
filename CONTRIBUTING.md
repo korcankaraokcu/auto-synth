@@ -52,6 +52,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 | `autosynth_tests` | The test suite |
 | `autosynth_render` | Headless renderer — patch JSON in, WAV out |
 | `autosynth_probe` | Analysis probe — WAV in, every intermediate stage out as JSON |
+| `autosynth_eval` | Ground-truth recovery harness — how good is the fitter? |
 | `install_plugin` | Copies the VST3 to the per-user plug-in folder |
 
 ### Known build traps
@@ -64,6 +65,13 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 - **Build the configuration you intend to test.** Building `RelWithDebInfo`
   while running a `Release` binary means a fixed bug keeps reproducing. This
   cost an afternoon once.
+- **Rebuild *every* tool you are about to measure with.** The same trap in a
+  second costume: after changing the envelope fitter, `autosynth_probe` and
+  `autosynth_tests` were rebuilt but `autosynth_eval` was not, so a harness
+  "baseline" was recorded from a binary predating the change. An hour then went
+  into bisecting a regression that was really a comparison against the wrong
+  build. `.\scripts\bootstrap.ps1` builds all of them, which is the reason to
+  prefer it over hand-picked targets.
 - **Keep the checkout path short on Windows.** JUCE's repository contains very
   deep paths of its own (iOS demo assets nested a dozen levels down), and with
   `MAX_PATH` at 260 characters the *fetch* fails before anything is compiled --
@@ -130,9 +138,12 @@ plugin/
   src/analysis/    Stft, Yin, Partials, Grouping
   src/fit/         WaveformFit, EnvelopeFit, FilterFit, Modulation, EffectsFit,
                    PartialFit, Nnls, CmaEs, Refine
+  src/eval/        Recovery — the ground-truth harness
   src/Parameters*  host-automatable parameters
   src/Plugin*      processor and editor
-  tools/           render_main.cpp, probe_main.cpp
+  src/ParamKnob.h  shared rotary knob; yields the wheel to the scroll panel
+  src/ControlGroup.h  a titled box of related global controls
+  tools/           render_main.cpp, probe_main.cpp, eval_main.cpp
   tests/           the suite, and golden/ — frozen reference data
 scripts/
   bootstrap.ps1
@@ -173,8 +184,12 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-100 cases. Tags: `[ir]`, `[engine]`, `[analysis]`, `[fit]`, `[capabilities]`,
-`[golden]`.
+118 cases. Tags: `[ir]`, `[engine]`, `[analysis]`, `[fit]`, `[capabilities]`,
+`[recovery]`, `[unison]`, `[golden]`.
+
+Tests tagged `[.slow]` are hidden by default and run only when asked for by
+name — `autosynth_tests "[.slow]"`. There is one: the assertion that the fitter
+beats the control, which has to run real trials.
 
 ### The golden fixtures
 
@@ -275,26 +290,88 @@ implementations share a rounding pattern, not that they agree about the sound.
 
 These drove design decisions and are cheaper to read than to rediscover.
 
-### Fitter comparison
+### Measuring the fitter
 
-From the ground-truth recovery harness (24 trials, seed 0), measured before the
-Python reference was removed. **The harness has not yet been ported — see the
-roadmap.** Control (an untouched default patch): spectral 4.271, loudness
-12.326, centroid 2.756.
+```
+autosynth_eval --trials 24 --seed 0            # with refinement
+autosynth_eval --trials 24 --seed 0 --no-refine
+autosynth_eval --trials 24 --json
+```
 
-| | `baseline` | `baseline` +CMA | `partial` | `partial` +CMA |
-|---|---|---|---|---|
-| spectral | 1.018 | **0.561** | 1.118 | 0.600 |
-| loudness_db | 3.379 | **2.106** | 5.201 | 2.886 |
-| centroid_oct | 0.675 | 0.286 | 0.828 | **0.279** |
-| oscillator count exact | 12% | 12% | **33%** | **33%** |
+24 trials, seed 0, current IR. Both columns face the *same* targets, so this is
+a paired comparison and only refinement differs. Control — an untouched default
+patch against those same targets — is spectral 2.272, loudness 21.406, centroid
+1.574.
 
-Read the columns together, because the conclusion only appears when you do.
-Unrefined, the simplest fitter wins on audio while making worse structural
-decisions. Refined, both roughly halve their audio distance and converge — at
-which point the tiebreaker is structural, and 33% against 12% on oscillator
-count is not a close call for a tool whose purpose is a *multi-oscillator*
-patch.
+| | `PartialFit` | `PartialFit` +CMA |
+|---|---|---|
+| spectral | 0.946 | **0.583** |
+| loudness_db | 10.083 | **8.938** |
+| centroid_oct | 0.819 | **0.254** |
+| oscillator count exact | 62.5% | 58.3% |
+| root within a semitone | 79.2% | 79.2% |
+
+Refinement earns its keep on brightness above all — centroid error falls by
+about two thirds — and cuts spectral distance by roughly a third. Loudness
+moves least, at around 11%.
+
+Two things in that table are worth not over-reading:
+
+- **The oscillator count drops slightly with refinement.** That is one trial out
+  of twenty-four, which is noise at this sample size, not a finding. The
+  mechanism is real, though, and worth remembering: refinement can retire an
+  oscillator by driving a level to zero, so it can occasionally remove a
+  *correct* one. It can never add one back.
+- **Root accuracy is identical.** It has to be — `root_hz` is not in refinement
+  scope, so pitch is settled entirely by analysis. Seeing the two columns agree
+  exactly is a useful check that the structure/precision split is holding.
+
+**These numbers are not comparable to any taken before the reverb parameters
+were added.** Random patches are sampled from the IR, so changing the IR changes
+the target population — the control column moved from 12.3 to 21.4 loudness on
+the same nominal settings, which is the distribution shifting, not a
+regression. Always read a fitted score against the control from its own run.
+
+### Two corrections the harness needed before it could be believed
+
+Both were found by using it, and both had been silently flattening every
+number it produced.
+
+**It scored parameters that were switched off.** The first version compared
+every continuous parameter on every trial, including a detune on an oscillator
+with one unison voice, a cutoff with the filter bypassed, an LFO rate with no
+destination. None of those affect the audio, so the fitter cannot recover them
+and has no reason to. Averaging them in produced errors near 0.5 — which is
+exactly the expected distance between two independent uniform draws, and
+indistinguishable from a real failure. The whole worst-recovered list read as
+"the fitter recovers nothing". `affectsAudio` now scores a parameter only where
+the target's own settings give it an audible effect.
+
+**It compared oscillator 0 against oscillator 0.** The fitter emits sources in
+salience order; a random target's oscillators are in no order at all. Slot *n*
+on one side has no reason to be the same voice as slot *n* on the other, so most
+per-oscillator comparisons were between unrelated oscillators. `matchOscillators`
+now pairs them by sounding frequency, loudest first, and refuses a pairing more
+than half a semitone apart.
+
+Together these moved `cents` from invisible to a clear 0.18–0.25 — pitch was
+being recovered well the whole time and the measurement could not see it.
+
+The general lesson, since it will happen again: **a measurement that averages
+over unidentifiable parameters converges on the number you would get from a
+coin.** If a metric looks uniformly bad, check that every term in it could have
+been known.
+
+### What the worst-recovered list is telling you
+
+The harness ranks parameters by mean error, normalised by each parameter's own
+range. The top of that list currently sits near **0.5** — `reverb.level`,
+`lfos.*.phase`, `lfos.*.delay`, the various `env.curve` entries.
+
+That number is a signature, not noise: a fitter that returns a *constant*
+against a uniformly random target scores almost exactly 0.5. Every parameter up
+there is one nothing currently estimates. The list is a to-do list, and it is
+reporting honestly.
 
 The shipped pipeline is `PartialFit` plus refinement.
 
@@ -331,6 +408,166 @@ harmonic grid, not a tuning problem:
 
 Partial tracking (McAulay–Quatieri) plus greedy multi-f0 grouping replaces the
 grid with measured partials, which is why `PartialFit` is the shipped path.
+
+### Unison by beating
+
+Spectral clustering can only count unison voices once they resolve into
+separate peaks, which needs a detune wide enough to beat the analysis
+resolution. Below that they merge into one partial, the count came back as one,
+and narrow unison was systematically missed.
+
+Two voices *d* cents apart do not stop existing when they stop resolving — they
+amplitude-modulate at their difference frequency. At harmonic *k* of a group
+with fundamental *f₀*:
+
+```
+beat rate = k · f₀ · (2^(d/1200) − 1)
+```
+
+The factor of *k* is the entire discriminator. A beat rate **grows in
+proportion to harmonic number**, because the frequency gap between two detuned
+partials widens up the series. Nothing else in this chain does that — tremolo
+and vibrato modulate every harmonic at the *same* rate, and a decaying envelope
+is not periodic at all. So the test is not "are the harmonic envelopes
+periodic", which would fire on every LFO in the test set; it is "does the rate
+rise proportionally with *k*", checked against a constant-rate model that
+tremolo fits perfectly and unison does not.
+
+Measured against known detunes, on two voices:
+
+| true detune | recovered |
+|---|---|
+| 8 cents | 8.01 |
+| 12 cents | 11.77 |
+| 25 cents | 24.46 |
+| 40 cents | 40.45 |
+
+On the recovery harness, mean `unison_detune` error falls from 0.352 to 0.306
+— smaller than the isolated figures suggest, because random targets often have
+more than two voices, where the beat measures adjacent spacing rather than the
+full spread.
+
+One implementation note worth keeping. The first version took the **tallest**
+autocorrelation peak and reported roughly half the true beat rate often enough
+to wreck the proportional fit — the classic octave error, since autocorrelation
+peaks at every multiple of the period. Taking the *first* peak within 85% of the
+tallest fixed it outright: 12 cents went from reading 6.34 to reading 11.77.
+
+Least squares was also tried for the proportional fit and is the wrong tool
+here. A few harmonics whose period detection goes astray drag the line badly,
+and R² then condemns a set of rates that are mostly right. Counting inliers
+around a *median* slope is unbothered by a minority of bad harmonics, which is
+the normal case — high harmonics are weak and their envelopes noisy.
+
+### What two real samples exposed
+
+A solo violin and a solo clarinet — four seconds each, sustained, with vibrato
+and pre-engineered reverb — found five analysis bugs in an afternoon. None of
+them could have been found by the recovery harness, because every one depends
+on something synthetic targets do not have: room tone, bowing, or a sustain
+that is not perfectly flat.
+
+**The subharmonic guard was defeated by density.** Both samples had their
+fundamental identified an octave low — the violin at 439 Hz where YIN said 877
+with a rock-steady track, the clarinet at 226 against 441. The guard tested
+whether the predicted harmonics were *present*, and with a few hundred tracked
+partials there is always something within 50 cents of any predicted frequency,
+so nothing ever looked missing. What separates a real fundamental from a
+subharmonic is where the energy *is*: measured on the violin, the 439 Hz
+candidate carried 0.5% of its energy on odd harmonics, and the clarinet's 226 Hz
+candidate 0.1%, against 58.6% and 71.4% for the true fundamentals. The guard now
+takes the greatest common divisor of the harmonics that carry real weight, which
+generalises past octaves and is safe for a clarinet, whose odd-harmonic
+dominance gives a divisor of 1.
+
+**Track fragments were being counted as unison voices.** Both samples came back
+as three oscillators fifty cents apart. Harmonic 1 of the violin had 189
+partials assigned to it, of which exactly one lasted longer than a tenth of the
+note — the rest were room noise two octaves away, plus fragments left behind
+when vibrato walked a partial until the tracker gave up. Unison voices are
+*simultaneous*; fragments are *sequential*, so requiring real duration
+separates them and costs nothing on synthesised unison.
+
+**The fundamental was never refined after selection.** Candidates come from a
+coarse grid and matching tolerates 50 cents, so a candidate tens of cents off
+claims exactly the right partials and wins. The clarinet was described as 430.9
+Hz — flat by 42 cents, audibly out of tune. Fitting the fundamental to the
+partials it claimed fixed it, and as a side effect every synthetic fixture
+snapped to its exact generated frequency: 219.8 → 220.0, 439.7 → 440.0,
+109.6 → 110.0.
+
+**A played note is not a flat note.** Gate detection looked for a sustain
+holding within 2.5 dB. The violin's sustain swings about 14 dB at vibrato rate,
+so no plateau was ever found, a four-second bowed note was classified one-shot,
+and it fitted a 1.2 second attack with a tail forty times too loud. Flatness is
+now judged on a copy smoothed over roughly one vibrato period — which does not
+weaken the pluck test, because smoothing flattens an oscillation but leaves a
+monotonic decay's slope intact.
+
+**Note-off was taken from the wrong place.** The gate was the end of the longest
+flat run, which on a wobbling sustain finishes wherever the wobble happened to
+be briefly calm: the clarinet, whose note plainly stops at 3.0 s, was gated at
+1.38 s. Walking back from the end for the last frame within 6 dB of the held
+level puts both samples within 20 ms of the truth, and improved the synthetic
+`sustained` fixture from a 110 ms error to 33 ms.
+
+### Fitting the room
+
+With the five analysis bugs fixed, the error split cleanly in two: a note body
+around 4 dB and a tail around 27 dB. Everything left was the room, so the room
+became worth fitting.
+
+`EffectsFit::detectReverb` answers the narrow question that becomes tractable
+once note-off is known accurately — after the note stops, is there a diffuse
+tail, how long does it take to die, and how loud is it? The decay is treated as
+**two segments**: the direct sound's release owns the fast knee at the start,
+and the reverb owns the slow exponential that follows. Each is measured on its
+own segment, so neither can absorb the other. That is the degeneracy settled by
+structure rather than left to the optimiser.
+
+Three things had to be right for it to work, and each was wrong first:
+
+- **The noise floor has to be measured, not assumed.** A fixed −60 dB threshold
+  read a quiet room's hiss as part of the tail, which on the violin put two
+  thirds of the fitted region inside the noise floor and returned a two-second
+  RT60 for a room that had none.
+- **`level` is not the wet/dry ratio.** A comb with feedback *f* settles at a
+  gain of 1/(1−*f*), which at realistic room sizes is a factor of eight or nine.
+  Setting the level to the measured tail-to-note ratio made it about 28 dB too
+  loud.
+- **Shortening the release and *enabling* the reverb are different
+  conditions.** `detectReverb` can find a decay that `fitReverb` then declines
+  to model because the return is too quiet to be worth switching on. Cutting the
+  release on the first condition threw the tail away with nothing to replace it.
+
+| | note body | tail | whole |
+|---|---|---|---|
+| violin | 3.51 dB | **2.92 dB** | **3.37 dB** (was 10.64) |
+| clarinet | 3.45 dB | 9.69 dB | **4.98 dB** |
+
+### Vibrato was being fitted as a delay
+
+The violin's tail turned out not to be a reverb problem at all. It had a delay
+fitted at 0.22 s with 0.84 feedback — ringing at under 7 dB per second, which
+left the patch droning through the whole tail. 0.22 s is the period of 4.5 Hz.
+It was the vibrato.
+
+Delay detection correlates the loudness envelope, and vibrato makes that
+envelope every bit as periodic as an echo does. The discriminator is structural:
+**a delay repeats the signal, so its echoes outlive the note; modulation stops
+when the note stops.** Looking for the same period *after* note-off separates
+them, because a played note's decay is smooth and has no interior peak there.
+
+This was the single largest error in the violin fit, and the reverb work had
+been masking it.
+
+### A note on the release/reverb degeneracy, caught in the act
+
+Before the note-off fix, the clarinet scored *better* overall — 5.86 dB against
+9.34 — with a gate 1.6 seconds early and a long release. That release was
+imitating the reverb tail. A wrong analysis outscored a right one because the
+patch had no other way to account for a room, which is exactly why the two must
+be separated structurally and never left to a distance metric to arbitrate.
 
 ### Traps found along the way
 
@@ -369,12 +606,8 @@ Roughly in priority order.
 
 ### Restore what the Python removal cost
 
-- **Port the ground-truth recovery harness.** `eval/recovery.py` generated
-  random patches, fitted them back and scored parameter recovery. It had no C++
-  counterpart and went with the rest of Python. The golden fixtures cover
-  *conformance* — that behaviour has not changed — but nothing currently
-  measures *how good the fitter is*, so the table above cannot be reproduced or
-  improved against. This is the highest-value gap.
+- ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth_eval`, see
+  [Measuring the fitter](#measuring-the-fitter).
 - **Port NMF rank selection** (`fit/rank.py`). Not on the shipped path, but
   needed for "rank within a group" below.
 
@@ -382,11 +615,13 @@ Roughly in priority order.
 
 At ~33% exact, this is the ceiling on everything else.
 
-- **Unison by beating.** Unison estimation under-counts because narrow detune
-  does not resolve spectrally. Two voices *d* cents apart amplitude-modulate at
-  their difference frequency, which is measurable long before they separate —
-  and `Modulation` already has the periodicity machinery. Best
-  value-per-effort item on this list.
+- ~~Unison by beating.~~ **Done** — `Grouping::detectUnisonBeating`. See
+  [Unison by beating](#unison-by-beating) below. What remains is recovering the
+  voice *count*: the estimator reports two, which is the minimum that explains a
+  beat, and the detune it recovers is the gap between *adjacent* voices rather
+  than the full spread. For three voices spread over 20 cents it returns two
+  voices 10 cents apart — a faithful description of the beating, and not the
+  patch that produced it.
 - **Roles before counting.** Detect sub-octave energy, noise floor and transient
   separately; group only the harmonic body. More stable, and the resulting patch
   is more legible.
@@ -401,11 +636,14 @@ At ~33% exact, this is the ceiling on everything else.
   one destination per slot rather than a matrix. Separately, the slow half of
   the envelope should escalate ADSR → multi-segment only when the residual
   justifies the extra parameters.
-- **Reverb detection.** The reverb exists and is editable; *fitting* one is
+- **Reverb detection — now the top priority.** Measured on two real samples,
+  the un-fitted reverb tail is 27 dB of error against a 4 dB note body: it is
+  the entire remaining gap, and any library sample will have it. Fitting one is
   blind dereverberation and realistically gets a heuristic — detect a long
-  diffuse tail, shorten the release, push it to a send. The trap: a reverb tail
-  and a long release are near-degenerate, so a fitter handed both without
-  explicit scope will trade them against each other and get both wrong.
+  diffuse tail, shorten the release, push it to a send. The trap is documented
+  above and has now been observed: a reverb tail and a long release are
+  near-degenerate, and a wrong gate with a long release scored *better* than a
+  correct one because the release was imitating the reverb.
 
 ### Platform and reach
 

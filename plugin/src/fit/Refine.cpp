@@ -25,18 +25,43 @@ const std::map<std::string, double> kFloors {
     { "spectral", 0.10 }, { "loudness", 0.50 }, { "centroid", 0.05 }
 };
 
-std::vector<float> envelopeDb (const float* samples, int numSamples, double sampleRate)
+// Loudness in dB against a *fixed* reference, not against the signal's own peak.
+//
+// Normalising each signal by its own peak made this term completely blind to
+// level: a candidate ten decibels too quiet scored exactly as well as one that
+// matched. Nothing else in the objective anchors absolute level either -- the
+// spectral log-term actively prefers a quiet render, because a fit carries more
+// energy than the target in the many near-silent bins and turning everything
+// down moves all of them closer to the target's floor.
+//
+// The result was refinement reliably making patches quieter: measured on two
+// library samples it dropped them 8 to 11 dB below the source while its own
+// loss improved, so a refined fit sounded worse than the unrefined one it
+// started from.
+//
+// Passing the target's peak as the reference for both makes the term mean what
+// its name says. The floor stays relative to that same reference, so a decayed
+// tail is still compared against a floor rather than against digital silence.
+std::vector<float> envelopeDb (const float* samples, int numSamples, double sampleRate,
+                               float referencePeak)
 {
+    juce::ignoreUnused (sampleRate);
     auto env = Stft::loudnessEnvelope (samples, numSamples, 256);
-    const auto peak = env.empty() ? 0.0f : *std::max_element (env.begin(), env.end());
-    if (peak <= 1.0e-12f)
+    if (referencePeak <= 1.0e-12f)
     {
         std::fill (env.begin(), env.end(), static_cast<float> (-kDynamicRangeDb));
         return env;
     }
     for (auto& v : env)
-        v = static_cast<float> (std::max (20.0 * std::log10 (v / peak + 1.0e-12), -kDynamicRangeDb));
+        v = static_cast<float> (std::max (20.0 * std::log10 (v / referencePeak + 1.0e-12),
+                                          -kDynamicRangeDb));
     return env;
+}
+
+float envelopePeak (const float* samples, int numSamples)
+{
+    const auto env = Stft::loudnessEnvelope (samples, numSamples, 256);
+    return env.empty() ? 0.0f : *std::max_element (env.begin(), env.end());
 }
 
 struct TargetFeatures
@@ -44,13 +69,15 @@ struct TargetFeatures
     std::vector<Stft::Result> spectrograms;
     std::vector<float> loudnessDb;
     std::vector<float> centroidLog2;
+    float loudnessPeak = 0.0f;
 
     TargetFeatures (const float* samples, int numSamples, double sampleRate)
     {
+        loudnessPeak = envelopePeak (samples, numSamples);
         for (auto scale : kSearchScales)
             spectrograms.push_back (Stft::magnitudeSpectrogram (samples, numSamples, scale,
                                                                 std::max (1, scale / 4), sampleRate));
-        loudnessDb = envelopeDb (samples, numSamples, sampleRate);
+        loudnessDb = envelopeDb (samples, numSamples, sampleRate, loudnessPeak);
 
         const auto centroid = Stft::spectralCentroid (spectrograms.back());
         centroidLog2.resize (centroid.size());
@@ -91,7 +118,7 @@ Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
     }
     loss.spectral /= static_cast<double> (std::size (kSearchScales));
 
-    const auto loud = envelopeDb (samples, numSamples, sampleRate);
+    const auto loud = envelopeDb (samples, numSamples, sampleRate, target.loudnessPeak);
     const auto loudCount = std::min (loud.size(), target.loudnessDb.size());
     for (size_t i = 0; i < loudCount; ++i)
         loss.loudness += std::abs (target.loudnessDb[i] - loud[i]);
@@ -191,7 +218,10 @@ const std::map<std::string, Spec>& specTable()
         t["delay.time"] = { "delay.time", 0.01, 1.0, true };
         t["delay.feedback"] = { "delay.feedback", 0.0, 0.85, false };
         t["delay.mix"] = { "delay.mix", 0.0, 1.0, false };
-        t["noise_level"] = { "noise_level", 0.0, 1.0, false };
+        // Bounded for the same reason PartialFit caps it: filling empty bins
+        // lowers a log-spectral error, so an unbounded noise level is a free
+        // win for the objective and a loss for the ear.
+        t["noise_level"] = { "noise_level", 0.0, 0.25, false };
         t["master_level"] = { "master_level", 0.0, 1.0, false };
         return t;
     }();
@@ -330,6 +360,26 @@ void setParameter (Patch& patch, const std::string& path, double value)
 
 } // namespace
 
+std::vector<Refine::ParamSpec> Refine::continuousSpecs()
+{
+    std::vector<ParamSpec> out;
+    out.reserve (specTable().size());
+    for (const auto& entry : specTable())
+        out.push_back ({ entry.second.path, entry.second.lo, entry.second.hi,
+                         entry.second.logScale });
+    return out;
+}
+
+double Refine::parameterValue (const Patch& patch, const std::string& path)
+{
+    return getParameter (patch, path);
+}
+
+void Refine::setParameterValue (Patch& patch, const std::string& path, double value)
+{
+    setParameter (patch, path, value);
+}
+
 std::vector<std::string> Refine::scopeFor (const Patch& patch)
 {
     std::vector<std::string> paths;
@@ -419,7 +469,32 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
 
     const auto& table = specTable();
     const auto duration = numSamples / sampleRate;
-    const auto gate = options.gateSeconds >= 0.0 ? options.gateSeconds : duration;
+
+    // Where the note is released. Detected from the target when the caller does
+    // not say, which is the common case.
+    //
+    // The old default was `duration` -- hold the note for the whole file. That
+    // is wrong for anything that stops before the end, which is every real
+    // recording: candidates were rendered still sounding while the target had
+    // gone quiet seconds earlier, so the only way to fit was to mangle the
+    // envelope into faking a release it was never allowed to perform. On two
+    // library samples refinement made the fit three to five times worse this
+    // way, and the plugin refines by default, so what it produced was worse
+    // than the raw analysis it started from.
+    //
+    // The recovery harness never showed it because it passes the gate
+    // explicitly -- the one caller that did.
+    auto gate = options.gateSeconds;
+    if (gate < 0.0)
+    {
+        const auto rms = Stft::loudnessEnvelope (target, numSamples, 256);
+        std::vector<float> times (rms.size());
+        for (size_t i = 0; i < rms.size(); ++i)
+            times[i] = static_cast<float> (i * 256.0 / sampleRate);
+
+        const auto detected = EnvelopeFit::detectGate (rms, times);
+        gate = detected.oneShot ? duration : detected.time;
+    }
 
     std::vector<double> x0 (scope.size());
     for (size_t i = 0; i < scope.size(); ++i)

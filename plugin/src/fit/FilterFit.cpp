@@ -234,14 +234,31 @@ FilterFit::EnvSplit FilterFit::trajectoryToEnv (const std::vector<float>& cutoff
     }
     mean /= static_cast<double> (u.size());
 
-    auto lo = std::numeric_limits<double>::infinity();
-    auto hi = -std::numeric_limits<double>::infinity();
     for (auto& value : u)
-    {
         value -= mean;
-        lo = std::min (lo, value);
-        hi = std::max (hi, value);
-    }
+
+    // Range from percentiles, not from the extremes.
+    //
+    // The cutoff trajectory is an estimate per frame and it occasionally throws
+    // a wild one: on a clarinet sitting steadily around 1200-2200 Hz, two
+    // isolated frames read 12.5 kHz and 19.8 kHz. Taken as min-to-max that is a
+    // 5.5 octave sweep, which clipped against the 4 octave limit and produced a
+    // filter envelope that opened across the whole note -- audible as the sound
+    // swelling for a second and a half before settling, which is not what the
+    // sample does at all.
+    //
+    // The tenth and ninetieth percentiles describe where the cutoff actually
+    // spends its time and are unmoved by a couple of bad frames.
+    auto sorted = u;
+    std::sort (sorted.begin(), sorted.end());
+    const auto at = [&sorted] (double q)
+    {
+        const auto idx = juce::jlimit<size_t> (0, sorted.size() - 1,
+                                               static_cast<size_t> (q * (sorted.size() - 1)));
+        return sorted[idx];
+    };
+    const auto lo = at (0.10);
+    const auto hi = at (0.90);
 
     const auto span = hi - lo;
     if (span < minOctaves)
@@ -250,7 +267,7 @@ FilterFit::EnvSplit FilterFit::trajectoryToEnv (const std::vector<float>& cutoff
     split.baseCutoffHz = static_cast<float> (anchorHz * std::pow (2.0, lo));
     split.envAmountOctaves = static_cast<float> (span);
     for (size_t i = 0; i < u.size(); ++i)
-        split.shape[i] = static_cast<float> ((u[i] - lo) / span);
+        split.shape[i] = static_cast<float> (juce::jlimit (0.0, 1.0, (u[i] - lo) / span));
     return split;
 }
 

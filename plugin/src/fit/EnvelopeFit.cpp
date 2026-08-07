@@ -42,7 +42,7 @@ EnvelopeFit::Gate EnvelopeFit::detectGate (const std::vector<float>& rms,
                                            const std::vector<float>& times,
                                            float maxPlateauRangeDb, double minPlateauSeconds,
                                            double rangeWindowSeconds, float levelFloor,
-                                           double smoothSeconds)
+                                           double smoothSeconds, double plateauSmoothSeconds)
 {
     Gate gate;
     if (rms.size() < 4 || times.size() < 4)
@@ -76,13 +76,32 @@ EnvelopeFit::Gate EnvelopeFit::detectGate (const std::vector<float>& rms,
     if (span > 1)
         db = nd::uniformFilter1d (db, span);
 
+    // Flatness is judged on a *more* heavily smoothed copy, over roughly one
+    // vibrato period.
+    //
+    // A played note is not a flat note. A violin's sustain swings some 14 dB at
+    // vibrato rate, so against a 2.5 dB flatness threshold no plateau was ever
+    // found and a four-second sustained bow was classified one-shot with its
+    // gate at the very end of the file -- which then fitted a 1.2 s attack and
+    // a tail forty times too loud. Synthetic test tones hold a dead-flat
+    // sustain, so nothing in the suite could show this.
+    //
+    // Averaging over a vibrato period does not weaken the pluck test that the
+    // window below exists for: smoothing flattens an *oscillation* but leaves a
+    // monotonic decay's slope untouched, so a falling envelope still spans its
+    // full range and still reads as one-shot.
+    auto flatness = db;
+    const auto plateauSpan = std::max (1, static_cast<int> (std::lround (plateauSmoothSeconds / dt)));
+    if (plateauSpan > 1)
+        flatness = nd::uniformFilter1d (flatness, plateauSpan);
+
     // The range window is longer than the plateau-length requirement on
     // purpose. A slow pluck (-17 dB/s) spans only 2.6 dB over 150 ms, close
     // enough to a vibrato tone's 0.6 dB ripple that no threshold separates
     // them; over 250 ms the same pluck spans 4.4 dB and the gap is comfortable.
     const auto window = std::max (3, static_cast<int> (std::lround (rangeWindowSeconds / dt)));
-    const auto upper = nd::maximumFilter1d (db, window);
-    const auto lower = nd::minimumFilter1d (db, window);
+    const auto upper = nd::maximumFilter1d (flatness, window);
+    const auto lower = nd::minimumFilter1d (flatness, window);
 
     const auto peakI = peakIndex (norm);
 
@@ -103,8 +122,29 @@ EnvelopeFit::Gate EnvelopeFit::detectGate (const std::vector<float>& rms,
 
     if (bestLength * dt >= minPlateauSeconds && bestEnd >= 0)
     {
-        gate.time = times[static_cast<size_t> (bestEnd)];
         gate.oneShot = false;
+
+        // The flat run says the note *is* sustained. It does not say where the
+        // note ends, and using its end for that is fragile: on a real played
+        // note the sustain wobbles, so the longest flat stretch finishes
+        // wherever the wobble happened to be briefly calm. A clarinet whose
+        // note plainly stops at 3.0 s was gated at 1.38 s that way -- and at
+        // 2.62 s before the smoothing above, which is the same failure with a
+        // different arbitrary answer.
+        //
+        // Note-off is where the envelope leaves the sustain region for good, so
+        // find it by walking back from the end: the last frame still within
+        // 6 dB of the level actually being held.
+        const auto runStart = std::max (0, bestEnd - bestLength + 1);
+        std::vector<float> plateau (db.begin() + runStart, db.begin() + bestEnd + 1);
+        std::sort (plateau.begin(), plateau.end());
+        const auto sustainDb = plateau[plateau.size() / 2];
+
+        auto release = static_cast<int> (db.size()) - 1;
+        while (release > bestEnd && db[static_cast<size_t> (release)] < sustainDb - 6.0f)
+            --release;
+
+        gate.time = times[static_cast<size_t> (release)];
     }
     else
     {
@@ -170,6 +210,26 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     for (size_t i = 0; i < rawCurve.size(); ++i)
         curve[i] = rawCurve[i] / peak;
 
+    // What counts as "full level", judged on a smoothed copy.
+    //
+    // The attack ends when the note first gets loud, and that was being taken
+    // as the first frame reaching 95% of the raw maximum. On a modulated note
+    // the raw maximum is a vibrato crest that can land a second or more into
+    // the sustain, so the attack swallowed the whole first half of the note: a
+    // violin fitted with a 1.16 s amplitude attack, and a clarinet with a
+    // 1.55 s *filter* attack at full envelope amount -- which opened the filter
+    // slowly across the note and made it swell by 12 dB before settling.
+    //
+    // Smoothing over roughly one vibrato period gives a level the note actually
+    // sustains at rather than one crest of it. The *crossing* is still found on
+    // the unsmoothed curve, so a genuinely fast attack keeps its timing.
+    const auto dtForPeak = meanDiff (times);
+    auto contour = curve;
+    const auto contourSpan = std::max (1, static_cast<int> (std::lround (0.25 / dtForPeak)));
+    if (contourSpan > 1 && static_cast<int> (contour.size()) > contourSpan)
+        contour = nd::uniformFilter1d (contour, contourSpan);
+    const auto fullLevel = *std::max_element (contour.begin(), contour.end());
+
     const auto firstAbove = [&curve] (float level)
     {
         for (size_t i = 0; i < curve.size(); ++i)
@@ -180,7 +240,8 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
 
     if (oneShot)
     {
-        const auto peakI = peakIndex (curve);
+        // 0.9 of the level the note actually holds, not of a single crest.
+        const auto peakI = firstAbove (0.9f * fullLevel);
         const auto onsetI = firstAbove (floor);
         const auto attack = std::max (times[static_cast<size_t> (peakI)]
                                           - times[static_cast<size_t> (onsetI)], 1.0e-3f);
@@ -214,7 +275,9 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
 
     const auto onsetI = firstAbove (floor);
     std::vector<float> held (curve.begin(), curve.begin() + gateI);
-    const auto peakI = peakIndex (held);
+    auto peakI = firstAbove (0.9f * fullLevel);
+    if (peakI >= gateI)
+        peakI = peakIndex (held); // never reached it before note-off; fall back
     const auto attack = std::max (times[static_cast<size_t> (peakI)]
                                       - times[static_cast<size_t> (onsetI)], 1.0e-3f);
 

@@ -2049,14 +2049,14 @@
  ],
  "groups": [
   {
-   "f0": 219.82543109080044,
-   "salience": 290.885007328537,
-   "energy": 290.8850073285369,
+   "f0": 219.99956633619553,
+   "salience": 290.8761200904846,
+   "energy": 290.8761291503906,
    "num_partials": 18,
    "num_harmonics": 24,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.7032640422345345
+   "detune_cents": 0.703262461108623
   }
  ],
  "gate": {

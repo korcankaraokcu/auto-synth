@@ -277,6 +277,118 @@ TEST_CASE ("delay time is recovered from the loudness autocorrelation", "[fit]")
     }
 }
 
+TEST_CASE ("vibrato is not mistaken for a delay", "[fit]")
+{
+    // The false positive that cost the most. A delay repeats the *signal*, so
+    // its echoes outlive the note; vibrato and tremolo make the loudness
+    // envelope every bit as periodic but stop when the note does. Correlating
+    // over the whole file cannot tell them apart, and a violin with 4.5 Hz
+    // vibrato was fitted with a 0.22 s delay at 0.84 feedback -- ringing at
+    // under 7 dB per second, which left the patch droning through the entire
+    // tail. The delay time was exactly the vibrato period.
+    for (auto dest : { LfoDest::pitch, LfoDest::amp })
+    {
+        auto patch = simplePatch (Waveform::saw);
+        patch.ampEnv = { 0.005f, 0.01f, 1.0f, 0.05f, 0.0f };
+        patch.lfos[0] = { LfoShape::sine, dest, 4.5f, 0.7f, 0.0f, 0.0f };
+
+        const auto x = render (patch, 220.0, 2.5, 1.8);
+        const auto estimate = EffectsFit::detectDelay (x.data(), (int) x.size(), kSampleRate,
+                                                       kHop, 0.01, 1.8);
+        INFO ("dest " << (int) dest << " reported time " << estimate.time);
+        CHECK_FALSE (estimate.found);
+    }
+}
+
+// --- reverb ----------------------------------------------------------------
+
+TEST_CASE ("reverb round-trips through detection", "[fit]")
+{
+    // Render a known room, measure it back. RT60 is the thing being recovered;
+    // `size` is an opaque knob position, so the check is stated in seconds.
+    for (float size : { 0.4f, 0.75f })
+    {
+        auto patch = simplePatch (Waveform::saw);
+        patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.05f, 0.0f };
+        patch.reverb = { true, size, 0.0f, 0.6f };
+        patch.oscs[0].reverbSend = 1.0f;
+
+        const auto x = render (patch, 220.0, 3.0, 1.2);
+        const auto estimate = EffectsFit::detectReverb (x.data(), (int) x.size(),
+                                                        kSampleRate, 1.2, kHop);
+
+        const auto expected = EffectsFit::rt60ForSize (size);
+        INFO ("size " << size << " expected RT60 " << expected
+              << " measured " << estimate.rt60 << " fit " << estimate.decayFit);
+        REQUIRE (estimate.found);
+        // Within a third. The tail is measured through the note's own release
+        // and a finite noise floor, so this is an estimate, not a readout.
+        CHECK (estimate.rt60 > expected * 0.66);
+        CHECK (estimate.rt60 < expected * 1.5);
+    }
+}
+
+TEST_CASE ("a dry note has no reverb to find", "[fit]")
+{
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.05f, 0.0f };
+    patch.reverb.enabled = false;
+
+    const auto x = render (patch, 220.0, 3.0, 1.2);
+    const auto estimate = EffectsFit::detectReverb (x.data(), (int) x.size(),
+                                                    kSampleRate, 1.2, kHop);
+    INFO ("rt60 " << estimate.rt60 << " fit " << estimate.decayFit);
+    CHECK_FALSE (estimate.found);
+}
+
+TEST_CASE ("a bigger room gives a longer tail", "[fit]")
+{
+    const auto rt60For = [] (float size)
+    {
+        auto patch = simplePatch (Waveform::saw);
+        patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.05f, 0.0f };
+        patch.reverb = { true, size, 0.0f, 0.6f };
+        patch.oscs[0].reverbSend = 1.0f;
+        const auto x = render (patch, 220.0, 3.0, 1.2);
+        return EffectsFit::detectReverb (x.data(), (int) x.size(), kSampleRate, 1.2, kHop).rt60;
+    };
+
+    CHECK (rt60For (0.8f) > rt60For (0.35f));
+}
+
+TEST_CASE ("the RT60 mapping inverts itself", "[fit]")
+{
+    for (double size : { 0.1, 0.4, 0.7, 0.9 })
+    {
+        const auto rt60 = EffectsFit::rt60ForSize (size);
+        INFO ("size " << size << " -> " << rt60 << " s");
+        CHECK (EffectsFit::sizeForRt60 (rt60) == Catch::Approx (size).margin (0.02));
+    }
+}
+
+TEST_CASE ("fitting a reverbed note keeps the release off the tail", "[fit]")
+{
+    // The degeneracy, guarded. Given a note whose tail is all room, the release
+    // must stay short and the reverb must carry it -- otherwise the release
+    // absorbs the room, which measures *better* on whole-file distance while
+    // being the wrong description.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.08f, 0.0f };
+    patch.reverb = { true, 0.7f, 0.2f, 0.5f };
+    patch.oscs[0].reverbSend = 1.0f;
+
+    const auto target = render (patch, 220.0, 3.0, 1.2);
+
+    PartialFit::Options options;
+    options.hop = kHop;
+    const auto fitted = PartialFit::fit (target.data(), (int) target.size(), kSampleRate, options);
+
+    INFO ("reverb " << fitted.reverb.enabled << " size " << fitted.reverb.size
+          << " level " << fitted.reverb.level << " release " << fitted.ampEnv.release);
+    CHECK (fitted.reverb.enabled);
+    CHECK (fitted.ampEnv.release < 1.0f);
+}
+
 // --- NNLS ------------------------------------------------------------------
 
 TEST_CASE ("NNLS solves an exactly determined non-negative system", "[fit]")
@@ -387,6 +499,86 @@ TEST_CASE ("refinement improves the objective and never regresses", "[fit]")
     // The best candidate is kept explicitly, so a worse result is not merely
     // unlikely -- it is a bug.
     CHECK (result.finalLoss <= result.initialLoss + 1.0e-9);
+}
+
+TEST_CASE ("refinement finds note-off for itself", "[fit]")
+{
+    // The default used to be "hold the note for the whole file", which is wrong
+    // for anything that stops before the end -- every real recording. Candidates
+    // were rendered still sounding while the target had long gone quiet, so the
+    // only way to fit was to mangle the envelope into faking a release it was
+    // never allowed to perform, and refinement made library samples three to
+    // five times *worse*. The plugin refines by default, so what it produced
+    // was worse than the raw analysis it started from.
+    //
+    // The harness never caught it because it is the one caller that passed the
+    // gate explicitly.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.01f, 0.1f, 0.7f, 0.15f, 0.0f };
+    // A note that stops early and leaves a long quiet tail -- the shape of any
+    // real recording, and where holding the note open is ruinous rather than
+    // merely inaccurate.
+    const auto target = render (patch, 220.0, 3.0, 0.6);
+
+    const auto fitted = fitOf (target);
+
+    Refine::Options automatic;
+    automatic.maxEvaluations = 96;
+    const auto autoResult = Refine::run (fitted, target.data(), (int) target.size(),
+                                         kSampleRate, automatic);
+
+    // The old behaviour, stated explicitly: hold the note for the whole file.
+    Refine::Options held;
+    held.maxEvaluations = 96;
+    held.gateSeconds = 3.0; // == duration
+    const auto heldResult = Refine::run (fitted, target.data(), (int) target.size(),
+                                         kSampleRate, held);
+
+    // Judged on the rendered result, not on refinement's internal loss.
+    //
+    // The loss is the thing being questioned here, so it cannot also be the
+    // judge: holding the note open scores *better* on it while sounding worse,
+    // which is precisely the failure this test exists to catch. What matters is
+    // how close the refined patch renders to the target.
+    const auto distanceTo = [&target] (const Patch& p)
+    {
+        const auto rendered = render (p, 220.0, 3.0, 0.6);
+        return loudnessDistanceDb (rendered, target);
+    };
+
+    const auto autoDistance = distanceTo (autoResult.patch);
+    const auto heldDistance = distanceTo (heldResult.patch);
+    INFO ("detected " << autoDistance << " dB   held-open " << heldDistance << " dB");
+    CHECK (autoDistance < heldDistance);
+}
+
+TEST_CASE ("refinement does not quietly turn the patch down", "[fit]")
+{
+    // The loudness term used to normalise each signal by its own peak, which
+    // made it blind to level: a candidate 10 dB too quiet scored exactly as
+    // well as one that matched. Nothing else anchored level either -- the
+    // spectral log-term prefers a quiet render, since a fit carries more energy
+    // than the target in the many near-silent bins. Refinement reliably dropped
+    // real patches 8 to 11 dB below their source.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.01f, 0.1f, 0.7f, 0.15f, 0.0f };
+    const auto target = render (patch, 220.0, 2.0, 1.2);
+
+    const auto fitted = fitOf (target);
+    Refine::Options options;
+    options.maxEvaluations = 96;
+    const auto refined = Refine::run (fitted, target.data(), (int) target.size(),
+                                      kSampleRate, options);
+
+    const auto before = peakOf (render (fitted, 220.0, 2.0, 1.2));
+    const auto after = peakOf (render (refined.patch, 220.0, 2.0, 1.2));
+    const auto targetPeak = peakOf (target);
+
+    INFO ("target " << targetPeak << "  before " << before << "  after " << after);
+    REQUIRE (targetPeak > 0.01f);
+    // Within 6 dB of the target's level. Refinement may trade a little level
+    // for spectral accuracy; it may not walk away from it.
+    CHECK (after > targetPeak * 0.5f);
 }
 
 TEST_CASE ("refinement never invents oscillators", "[fit]")

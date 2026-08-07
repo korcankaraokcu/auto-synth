@@ -2421,34 +2421,34 @@
  ],
  "groups": [
   {
-   "f0": 109.6263464828262,
-   "salience": 257.36616029488914,
-   "energy": 257.36616029488914,
+   "f0": 110.00023566977849,
+   "salience": 257.35830426216125,
+   "energy": 257.3583068847656,
    "num_partials": 32,
    "num_harmonics": 32,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 1.1921708336108048
+   "detune_cents": 1.192158059927366
   },
   {
-   "f0": 1017.4117320514532,
-   "salience": 14.14565167260898,
-   "energy": 23.576086121014967,
-   "num_partials": 21,
+   "f0": 1008.2160576067818,
+   "salience": 14.1452198266983,
+   "energy": 19.930011749267578,
+   "num_partials": 18,
    "num_harmonics": 9,
    "unison_voices": 3,
    "unison_detune": 50.0,
-   "detune_cents": 33.58964241468265
+   "detune_cents": 27.895426069523253
   },
   {
-   "f0": 945.9378828196825,
-   "salience": 12.148976400023997,
-   "energy": 20.24829400004,
-   "num_partials": 17,
+   "f0": 946.1031415263412,
+   "salience": 12.649128556251522,
+   "energy": 21.081880569458008,
+   "num_partials": 18,
    "num_harmonics": 9,
    "unison_voices": 3,
    "unison_detune": 50.0,
-   "detune_cents": 28.47326521906343
+   "detune_cents": 28.777654405828848
   }
  ],
  "gate": {
@@ -2456,10 +2456,10 @@
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.016,
-  "decay": 0.005333333333333332,
-  "sustain": 0.9247489818732186,
-  "release": 0.005,
+  "attack": 0.001000000047497,
+  "decay": 0.004999999888241,
+  "sustain": 0.924748957157135,
+  "release": 0.004999999888241,
   "curve": 8.0
  },
  "waveform_fit": {

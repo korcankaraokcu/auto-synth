@@ -2061,24 +2061,24 @@
  ],
  "groups": [
   {
-   "f0": 219.82542994510413,
-   "salience": 198.83884372457413,
-   "energy": 198.83884372457413,
+   "f0": 219.99969448710573,
+   "salience": 198.83276987075806,
+   "energy": 198.832763671875,
    "num_partials": 14,
    "num_harmonics": 18,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.7973090493888382
+   "detune_cents": 0.797326366623857
   },
   {
-   "f0": 329.9718081031871,
-   "salience": 43.60179343946925,
-   "energy": 72.66965573244876,
+   "f0": 330.00007047411594,
+   "salience": 43.600460958480824,
+   "energy": 72.66743469238281,
    "num_partials": 6,
    "num_harmonics": 11,
    "unison_voices": 1,
    "unison_detune": 0.0,
-   "detune_cents": 0.3920043195284074
+   "detune_cents": 0.391980885359933
   }
  ],
  "gate": {

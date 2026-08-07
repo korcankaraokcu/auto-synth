@@ -23,6 +23,13 @@ namespace autosynth
 class PartialFit
 {
 public:
+    // Most noise a *pitched* patch may carry. Our noise source is flat and
+    // static, so it stands in badly for the shaped, note-correlated content a
+    // real recording has; left unbounded the level solve and then refinement
+    // drove a violin to 41% noise and the patch hissed. Unpitched material
+    // takes a different branch and is not bounded by this.
+    static constexpr float kMaxPitchedNoise = 0.12f;
+
     struct Options
     {
         double noteHz = 0.0;      // 0 means "use the detected f0"

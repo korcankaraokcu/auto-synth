@@ -56,6 +56,30 @@ public:
         double loudness = 0.0;
         double centroid = 0.0;
     };
+
+    // The searchable range of one continuous parameter.
+    //
+    // Exposed because the recovery harness needs exactly the same ranges: it
+    // samples random patches from them and reports per-parameter error
+    // normalised by them. A second copy of the table would drift, and the
+    // harness would then be scoring the fitter against a parameter space the
+    // fitter does not actually search.
+    struct ParamSpec
+    {
+        std::string path;
+        double lo = 0.0;
+        double hi = 1.0;
+        bool logarithmic = false;
+    };
+
+    // Every continuous parameter in the IR, whether or not a given patch would
+    // put it in scope.
+    static std::vector<ParamSpec> continuousSpecs();
+
+    // Read and write a parameter by IR path. Unknown paths read as 0 and are
+    // ignored on write.
+    static double parameterValue (const Patch& patch, const std::string& path);
+    static void setParameterValue (Patch& patch, const std::string& path, double value);
 };
 
 } // namespace autosynth
