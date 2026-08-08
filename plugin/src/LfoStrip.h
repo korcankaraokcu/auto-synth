@@ -16,22 +16,34 @@ class LfoStrip : public juce::Component
 {
 public:
     LfoStrip (AutoSynthProcessor& processorToUse, int lfoIndex)
-        : processor (processorToUse)
+        : processor (processorToUse), index (lfoIndex)
     {
         auto& state = processor.getState();
         const auto prefix = "lfos_" + juce::String (lfoIndex) + "_";
 
-        title.setText ("LFO " + juce::String (lfoIndex + 1), juce::dontSendNotification);
         title.setFont (juce::FontOptions (12.0f, juce::Font::bold));
         title.setColour (juce::Label::textColourId, juce::Colours::white);
         addAndMakeVisible (title);
 
         addCombo (shape, prefix + "shape", shapeAttachment);
         addCombo (dest, prefix + "dest", destAttachment);
+
+        // Say what the LFO is *doing*, not just that it exists.
+        //
+        // "LFO 1" is the synth's word for it; "vibrato" is the player's, and a
+        // user looking for vibrato scrolled straight past a strip that never
+        // used the term. The destination already carries the answer, so the
+        // title follows it.
+        dest.onChange = [this] { updateRole(); };
+        updateRole();
         addKnob (rate, rateLabel, prefix + "rate_hz", "rate", rateAttachment);
         addKnob (depth, depthLabel, prefix + "depth", "depth", depthAttachment);
         addKnob (fade, fadeLabel, prefix + "delay", "fade in", fadeAttachment);
     }
+
+    // Called by the editor after a fit, since a new patch changes the
+    // destination without the combo box firing.
+    void refresh() { updateRole(); }
 
     void paint (juce::Graphics& g) override
     {
@@ -45,7 +57,8 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced (6, 4);
-        title.setBounds (area.removeFromLeft (52));
+        // Wide enough for the role name, not just "LFO 1".
+        title.setBounds (area.removeFromLeft (118));
 
         auto combos = area.removeFromLeft (96);
         shape.setBounds (combos.removeFromTop (combos.getHeight() / 2).reduced (2, 4));
@@ -59,6 +72,17 @@ public:
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+
+    void updateRole()
+    {
+        // Matches LfoDest: none, pitch, amp, cutoff.
+        const char* roles[] = { "off", "vibrato", "tremolo", "filter sweep" };
+        const auto selected = juce::jlimit (0, 3, dest.getSelectedItemIndex());
+        title.setText ("LFO " + juce::String (index + 1) + ":  " + roles[selected],
+                       juce::dontSendNotification);
+        title.setColour (juce::Label::textColourId,
+                         selected == 0 ? juce::Colours::grey : juce::Colours::white);
+    }
 
     void addCombo (juce::ComboBox& box, const juce::String& id,
                    std::unique_ptr<ComboAttachment>& attachment)
@@ -95,6 +119,7 @@ private:
     }
 
     AutoSynthProcessor& processor;
+    const int index;
     juce::Label title;
     juce::ComboBox shape, dest;
     ParamKnob rate, depth, fade;

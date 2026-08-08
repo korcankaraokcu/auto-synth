@@ -228,16 +228,91 @@ Modulation::Detected Modulation::analyseTrajectory (const std::vector<float>& y,
 
     const auto detrended = detrend (y, dt, kDetrendSeconds);
 
+    // How often the trajectory actually turns over.
+    //
+    // This is the measure that separates a wobble from a slide, and neither
+    // concentration nor correlation does it. A violin's vibrato is irregular
+    // enough to smear its spectrum (concentration 0.07) but it still crosses
+    // its mean twice per cycle for the whole note. A pitch track stepping from
+    // one source to another is a single large excursion: it can correlate
+    // respectably with one period of a sine, but it only ever crosses once.
+    const auto crossings = [&detrended]
+    {
+        int count = 0;
+        for (size_t i = 1; i < detrended.size(); ++i)
+            if ((detrended[i - 1] < 0.0f) != (detrended[i] < 0.0f))
+                ++count;
+        return count;
+    }();
+
     double rate = 0.0, concentration = 0.0;
     dominantRate (detrended, dt, rate, concentration);
-    if (rate <= 0.0 || concentration < kMinConcentration)
+    out.rateHz = rate;
+    out.concentration = concentration;
+    if (rate <= 0.0)
+    {
+        out.rejectedBy = "no dominant rate";
         return out;
+    }
+    if (concentration < kMinConcentration)
+    {
+        out.rejectedBy = "concentration";
+        return out;
+    }
 
     LfoShape shape = LfoShape::sine;
     double phase = 0.0, amplitude = 0.0, correlation = 0.0;
     matchShape (detrended, dt, rate, shape, phase, amplitude, correlation);
-    if (amplitude <= 0.0 || correlation < kMinCorrelation)
+    out.correlation = correlation;
+    out.amplitude = amplitude;
+
+    const auto duration = detrended.size() * dt;
+    const auto expectedCrossings = 2.0 * rate * duration;
+    out.oscillationRatio = expectedCrossings > 1.0e-9 ? crossings / expectedCrossings : 0.0;
+
+    // Depth from how far the trajectory actually travels, not from the
+    // best-fit sine's amplitude.
+    //
+    // `matchShape` correlates against a rigid template, so when the wobble
+    // wanders in rate the integral partly cancels and the fitted amplitude
+    // collapses: a violin moving 24 cents peak-to-peak came back as 2. The RMS
+    // of a sine is its amplitude over root two, so scaling back up gives the
+    // same answer for a clean LFO and a far better one for a played note.
+    // Percentiles rather than RMS. For a sine the tenth and ninetieth sit at
+    // 0.95 of the amplitude, so this reads the same on a clean LFO -- but RMS
+    // counts every bit of trajectory noise as modulation, and on a real
+    // recording that inflates the depth well past what is actually there.
+    auto sorted = detrended;
+    std::sort (sorted.begin(), sorted.end());
+    const auto at = [&sorted] (double q)
+    {
+        const auto idx = juce::jlimit<size_t> (0, sorted.size() - 1,
+                                               static_cast<size_t> (q * (sorted.size() - 1)));
+        return static_cast<double> (sorted[idx]);
+    };
+    const auto excursion = 0.5 * (at (0.90) - at (0.10));
+    amplitude = std::max (amplitude, excursion);
+    out.amplitude = amplitude;
+    // A played wobble is irregular, so inside the vibrato band the shape only
+    // has to be recognisable rather than clean. Outside it, the full bar
+    // applies -- an oscillation at 18 Hz is not someone's finger.
+    const auto inVibratoBand = rate >= kVibratoMinHz && rate <= kVibratoMaxHz;
+    const auto requiredCorrelation = inVibratoBand ? kVibratoCorrelation : kMinCorrelation;
+
+    if (amplitude <= 0.0 || correlation < requiredCorrelation)
+    {
+        out.rejectedBy = "correlation";
         return out;
+    }
+
+    // A trajectory that turns over far more often than its own rate implies is
+    // not oscillating at that rate -- it is noisy, and the rate is an artefact
+    // of fitting a period to jitter.
+    if (out.oscillationRatio > kMaxOscillationRatio)
+    {
+        out.rejectedBy = "too irregular";
+        return out;
+    }
 
     // The modulation has to be worth a parameter. A ramp leaves a small
     // oscillating residue after detrending, and fitting that residue reports a
@@ -246,8 +321,12 @@ Modulation::Detected Modulation::analyseTrajectory (const std::vector<float>& y,
     const auto lo = *std::min_element (y.begin(), y.end());
     const auto hi = *std::max_element (y.begin(), y.end());
     const auto span = static_cast<double> (hi - lo);
+    out.relativeAmplitude = span > 1.0e-12 ? amplitude / span : 0.0;
     if (span > 1.0e-12 && amplitude < kMinRelativeAmplitude * span)
+    {
+        out.rejectedBy = "relative amplitude";
         return out;
+    }
 
     out.found = true;
     out.dest = dest;
@@ -394,11 +473,35 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
 
     std::sort (found.begin(), found.end(),
                [] (const Detected& a, const Detected& b)
-               { return a.concentration > b.concentration; });
+               { return a.correlation > b.correlation; });
+
+    // Drop modulations that are consequences of another one.
+    //
+    // The three trajectories are not independent: moving the pitch moves the
+    // spectral centroid, so a pitch LFO shows up again as a cutoff LFO at the
+    // same rate. On a fixture rendered with exactly one pitch LFO, both were
+    // reported -- the second an echo of the first, and a knob the user would
+    // have to undo by hand.
+    //
+    // Two modulations at the same rate are one phenomenon. The better-correlated
+    // one is kept, which is the trajectory the modulation is actually on.
+    std::vector<Detected> independent;
+    for (const auto& candidate : found)
+    {
+        auto echo = false;
+        for (const auto& kept : independent)
+        {
+            const auto ratio = candidate.rateHz / std::max (kept.rateHz, 1.0e-9);
+            if (ratio > 0.9 && ratio < 1.1)
+                echo = true;
+        }
+        if (! echo)
+            independent.push_back (candidate);
+    }
 
     std::vector<Lfo> out;
-    for (int i = 0; i < std::min (maxCount, static_cast<int> (found.size())); ++i)
-        out.push_back (toLfo (found[static_cast<size_t> (i)]));
+    for (int i = 0; i < std::min (maxCount, static_cast<int> (independent.size())); ++i)
+        out.push_back (toLfo (independent[static_cast<size_t> (i)]));
     return out;
 }
 

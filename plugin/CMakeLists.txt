@@ -129,6 +129,19 @@ target_link_libraries(autosynth_probe
     PUBLIC juce::juce_recommended_config_flags)
 
 # --------------------------------------------------------------------------
+# Fit diagnosis: why does the fit not sound like the target?
+#
+# A single distance number cannot say, and can mislead -- envelope distance
+# rated a hissing violin better than a good clarinet. This reports the
+# difference on axes a person can name and a parameter can fix.
+# --------------------------------------------------------------------------
+juce_add_console_app(autosynth_diff PRODUCT_NAME "autosynth_diff")
+target_sources(autosynth_diff PRIVATE tools/diff_main.cpp)
+target_link_libraries(autosynth_diff
+    PRIVATE autosynth_dsp juce::juce_audio_formats
+    PUBLIC juce::juce_recommended_config_flags)
+
+# --------------------------------------------------------------------------
 # Ground-truth recovery harness: how good is the fitter?
 #
 # The golden fixtures prove behaviour has not drifted. They say nothing about

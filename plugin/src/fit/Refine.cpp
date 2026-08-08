@@ -187,7 +187,15 @@ const std::map<std::string, Spec>& specTable()
         for (int i = 0; i < kNumOsc; ++i)
         {
             const auto p = "oscs." + std::to_string (i);
-            t[p + ".cents"] = { p + ".cents", -50.0, 50.0, false };
+            // Much narrower than the IR allows.
+            //
+            // Analysis pins pitch to within a few cents, and refinement given
+            // the full range walks away from it: a clarinet fitted at exactly
+            // the right pitch came out 31 cents sharp after refinement, which
+            // is plainly audible while barely moving a magnitude spectrum --
+            // the bins are wider than the error. Detuning is a precision knob
+            // here, not a way to buy spectral distance.
+            t[p + ".cents"] = { p + ".cents", -15.0, 15.0, false };
             t[p + ".level"] = { p + ".level", 0.0, 1.0, false };
             t[p + ".pulse_width"] = { p + ".pulse_width", 0.05, 0.95, false };
             t[p + ".unison_detune"] = { p + ".unison_detune", 0.0, 50.0, false };
@@ -207,7 +215,13 @@ const std::map<std::string, Spec>& specTable()
         for (int i = 0; i < kNumLfo; ++i)
         {
             const auto p = "lfos." + std::to_string (i);
-            t[p + ".rate_hz"] = { p + ".rate_hz", 0.05, 20.0, true };
+            // Capped well below the IR limit. Twenty hertz is not a
+            // modulation rate, it is roughness, and refinement drove a
+            // correctly-measured 3.3 Hz tremolo straight to the ceiling
+            // because smearing the spectrum lowered the distance. Analysis
+            // measures rate accurately now -- on a violin, 6.0 Hz against a
+            // true 5.8 -- so this only needs room to polish.
+            t[p + ".rate_hz"] = { p + ".rate_hz", 0.05, 12.0, true };
             t[p + ".depth"] = { p + ".depth", 0.0, 1.0, false };
             t[p + ".delay"] = { p + ".delay", 0.0, 2.0, false };
             t[p + ".phase"] = { p + ".phase", 0.0, 1.0, false };
@@ -425,11 +439,28 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
     {
         if (patch.lfos[static_cast<size_t> (i)].depth <= 0.0f)
             continue;
-        // Phase included deliberately: analysis recovers rate and shape well but
-        // depth only approximately -- the f0 tracker's own window low-passes
-        // vibrato before it is measured -- and phase not reliably at all.
+        // Rate is measured, not searched.
+        //
+        // Analysis reads it straight off the trajectory and gets it right --
+        // 6.0 Hz against a true 5.8 on a violin, 3.3 on a clarinet. Refinement
+        // then moved a correct 4.4 Hz vibrato down to 1.6 Hz and tripled its
+        // depth, because a slow deep wobble smears the spectrum in a way the
+        // objective rewards and the ear does not.
+        //
+        // That is the structure/precision split applied to modulation: a
+        // quantity analysis measures well belongs to analysis. Depth and phase
+        // stay searchable -- the f0 tracker's own window low-passes vibrato
+        // before it is measured, so depth is only ever approximate, and phase
+        // is not recovered reliably at all.
+        //
+        // Depth is out too, for the same reason and with the same evidence.
+        // Analysis measured a violin's vibrato at 5 cents; refinement returned
+        // 39, which is a wobble no player produces and the first thing a
+        // listener objects to. Under-stating vibrato is a knob turn away;
+        // over-stating it makes the patch unusable, and the knob is now
+        // labelled so it can be found.
         const auto p = "lfos." + std::to_string (i);
-        for (const char* leaf : { ".rate_hz", ".depth", ".delay", ".phase" })
+        for (const char* leaf : { ".delay", ".phase" })
             paths.push_back (p + leaf);
     }
 

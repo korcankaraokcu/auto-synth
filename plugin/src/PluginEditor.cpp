@@ -147,6 +147,10 @@ void AutoSynthEditor::refresh()
     spectrum.setSpectra (processor.getSpectra());
     for (auto& strip : strips)
         strip->refresh();
+    // The LFO strips name their destination in the title, and a fit changes it
+    // without the combo box firing.
+    for (auto& strip : lfoStrips)
+        strip->refresh();
 }
 
 void AutoSynthEditor::chooseFile()
