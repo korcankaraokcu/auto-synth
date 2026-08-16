@@ -20,6 +20,7 @@
 #include "fit/WaveformFit.h"
 #include "analysis/Partials.h"
 #include "analysis/Roles.h"
+#include "ir/VitalExport.h"
 #include "analysis/Stft.h"
 #include "analysis/Yin.h"
 
@@ -94,7 +95,7 @@ int main (int argc, char* argv[])
     if (args.positional.isEmpty())
     {
         std::fprintf (stderr, "usage: autosynth_probe <input.wav> [--hop n] [--fft n] "
-                              "[--refine 1] [--patch out.json]\n");
+                              "[--refine 1] [--patch out.json] [--vital out.vital]\n");
         return 2;
     }
 
@@ -318,6 +319,18 @@ int main (int argc, char* argv[])
                           out.getFullPathName().toRawUTF8());
     }
 
+    // ...and the same patch as a Vital preset, which is the whole argument for
+    // the IR being the deliverable: sample in, someone else's synth out,
+    // without this engine in between.
+    if (const auto it = args.options.find ("--vital"); it != args.options.end()
+        && it->second.isNotEmpty())
+    {
+        const juce::File vitalOut (juce::File::getCurrentWorkingDirectory()
+                                       .getChildFile (it->second));
+        juce::String error;
+        if (! autosynth::VitalExport::writeTo (finalPatch, vitalOut, &error))
+            std::fprintf (stderr, "warning: %s\n", error.toRawUTF8());
+    }
 
     const auto trajectories = autosynth::Modulation::extract (samples, numSamples, sampleRate, hop);
     const auto lfo = autosynth::Modulation::best (trajectories);

@@ -26,6 +26,7 @@ add_library(autosynth_dsp STATIC
     src/dsp/Tables.cpp
     src/dsp/Voice.cpp
     src/ir/Patch.cpp
+    src/ir/VitalExport.cpp
     src/analysis/Stft.cpp
     src/analysis/Yin.cpp
     src/analysis/Partials.cpp
@@ -190,6 +191,7 @@ if(AUTOSYNTH_BUILD_TESTS)
         tests/test_recovery.cpp
         tests/test_unison.cpp
         tests/test_nmf.cpp
+        tests/test_vital_export.cpp
         tests/test_wavetable.cpp
         tests/test_golden_engine.cpp
         tests/test_golden_analysis.cpp)

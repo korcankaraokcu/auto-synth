@@ -38,11 +38,13 @@ public:
 private:
     void refresh();
     void chooseFile();
+    void exportVital();
     void handleFile (const juce::File& file);
     static bool isSupported (const juce::String& path);
 
     AutoSynthProcessor& processor;
     juce::TextButton loadButton { "Load sample or patch..." };
+    juce::TextButton exportButton { "Export Vital" };
     juce::ToggleButton refineToggle { "Refine (slower, closer)" };
     juce::Label titleLabel;
     juce::Label statusLabel;

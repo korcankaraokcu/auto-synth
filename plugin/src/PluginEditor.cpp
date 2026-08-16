@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 
+#include "ir/VitalExport.h"
+
 namespace autosynth
 {
 
@@ -18,6 +20,11 @@ AutoSynthEditor::AutoSynthEditor (AutoSynthProcessor& p)
 
     loadButton.onClick = [this] { chooseFile(); };
     addAndMakeVisible (loadButton);
+
+    // The IR is the deliverable, so taking a fitted patch to another synth is
+    // a first-class action rather than a command-line afterthought.
+    exportButton.onClick = [this] { exportVital(); };
+    addAndMakeVisible (exportButton);
 
     refineToggle.setToggleState (true, juce::dontSendNotification);
     refineToggle.setColour (juce::ToggleButton::textColourId, juce::Colours::lightgrey);
@@ -151,6 +158,29 @@ void AutoSynthEditor::refresh()
     // without the combo box firing.
     for (auto& strip : lfoStrips)
         strip->refresh();
+}
+
+void AutoSynthEditor::exportVital()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Export as a Vital preset",
+                                                   juce::File::getSpecialLocation (
+                                                       juce::File::userDocumentsDirectory)
+                                                       .getChildFile (processor.getLoadedPatchName() + ".vital"),
+                                                   "*.vital");
+
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                              | juce::FileBrowserComponent::canSelectFiles,
+                          [this] (const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File())
+            return;
+
+        juce::String error;
+        const auto ok = VitalExport::writeTo (processor.getPatchSnapshot(), file, &error);
+        statusLabel.setText (ok ? "exported " + file.getFileName() : error,
+                             juce::dontSendNotification);
+    });
 }
 
 void AutoSynthEditor::chooseFile()
@@ -310,6 +340,7 @@ void AutoSynthEditor::resized()
 
     auto header = area.removeFromTop (32);
     loadButton.setBounds (header.removeFromRight (170).reduced (0, 2));
+    exportButton.setBounds (header.removeFromRight (110).reduced (0, 2));
     titleLabel.setBounds (header.removeFromLeft (140));
     refineToggle.setBounds (header.reduced (8, 4));
 

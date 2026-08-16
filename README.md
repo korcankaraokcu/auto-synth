@@ -23,6 +23,8 @@ drawn rather than dialled.
   describe the sound
 - **2 LFO slots**, so vibrato and tremolo can coexist rather than compete
 - Global filter with envelope, delay, and a shared reverb
+- **Export to Vital** — the fitted patch, wavetables and all, as a 
+  preset
 - Solo/mute per oscillator, A/B against the original, and a spectrum overlay
   showing source against fit
 

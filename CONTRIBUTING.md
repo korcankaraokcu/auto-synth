@@ -459,6 +459,162 @@ and R² then condemns a set of rates that are mostly right. Counting inliers
 around a *median* slope is unbothered by a minority of bad harmonics, which is
 the normal case — high harmonics are weak and their envelopes noisy.
 
+### Exporting to Vital
+
+The first exporter, and the reason the IR is described as the deliverable rather
+than the engine: nothing in `VitalExport` touches synthesis. It translates one
+description into another, and a second target would be another file this size.
+
+Vital was the right first choice because its oscillators are wavetables and ours
+now are too, so the part that would otherwise be a lossy approximation is a
+direct copy. Sixteen harmonic amplitudes inverse-transform into the 2048 samples
+per frame Vital expects, and a frame nobody has drawn on is its own waveform's
+series {d} so an analog patch exports as the shape it says it is rather than as a
+sixteen-harmonic impression of one. Rebuilt from the harmonics rather than
+resampled from our own 4096-point tables: resampling needs a filter and lands a
+sample short at the seam, which is where a wavetable is least forgiving, because
+the loop point is heard on every cycle.
+
+**Written from assumption, then corrected against evidence.** The first version
+guessed the numeric mappings and got most of them wrong. Checking a machine with
+Vital installed turned up 299 real presets, and comparing against 274 of them
+found this:
+
+| | assumed | measured |
+|---|---|---|
+| envelope times | seconds | the **fourth root** of seconds |
+| LFO rate | hertz | **log2** of hertz, and only when not tempo-synced |
+| oscillator tune | cents | a **semitone** fraction, so cents over 100 |
+| master volume | 0 to 1 | a unit spanning 1755 to 7399 |
+| modulation amount | inside the routing entry | a separate `modulation_N_amount` |
+| wavetable position | 0 to 255 | 0 to **256** |
+| wavetable object | had a `remapper` key | has `full_normalize` and `remove_all_dc` |
+
+The envelope one is worth showing the reasoning for, because it is the kind of
+thing that is invisible until measured. Stored decay across the collection spans
+0.27 to 2.37 and clusters hard on 1.0. As seconds that would mean no preset in
+299 decays faster than a quarter second, which is plainly false. As a fourth
+root it means 0.006 s to 31.4 s, the maximum lands on Vital's documented ceiling
+of 32, and the default sits at exactly one second. Everything fits at once.
+
+The modulation one was the worst, because it would have failed *silently*:
+`modulations` entries carry only source and destination, and the depth lives in
+a numbered parameter block. An amount written inside the entry is ignored, so
+every routing would have connected at zero and the preset would have loaded
+looking correct and sounding static.
+
+**Still assumed:** unison detune. It is a 0-to-10 control whose unit is not
+recoverable from presets {d} 124 of them sit on 4.4721, the square root of
+twenty, which suggests a power curve rather than a width in cents. Ours are
+placed linearly on that range.
+
+**And then it did not load.** Vital called the first corrected file corrupted,
+which found the last mistake and the most instructive one. A `Wave Source`
+component carries exactly four keys: `type`, `keyframes`, `interpolation`,
+`interpolation_style`. The exporter was writing thirteen, because the survey
+that produced the list had counted keys across *all* component types at once
+and handed back the union {d} `audio_file`, `num_points`, `window_size` and the
+rest belong to `Audio File Source` and `Line Source`. Counting what a field is
+*named* across a corpus is not the same as knowing which object it belongs to,
+and a schema derived that way is a superset that no parser accepts.
+
+Checked properly this time, by key *set* rather than by key name: all 510 Wave
+Source components across 299 presets carry that one four-key set and nothing
+else, and all 2063 of their keyframes carry `position` and `wave_data`. Every
+object the exporter now writes {d} preset, wavetable, group, component,
+keyframe, modulation {d} matches a real one exactly, with no extra key and none
+missing.
+
+**And it still would not load, because a preset is not a bag of settings.**
+Vital's engine is open source, and reading `LoadSave::jsonToState` answered in a
+minute what a week of file comparison could not. It reaches into
+`settings["lfos"]` and `settings["sample"]` *directly*, without checking they
+exist, so a preset lacking either fails to parse and is reported as corrupted.
+Every parameter we wrote was correct; the file was missing two blocks that no
+amount of comparing parameters would have revealed, because they are not
+parameters. Eight drawn LFO shapes {d} the canvas the `LfoShape` choice is drawn
+on, not the choice itself {d} and the sampler's sample, which is silent here and
+still has to decode.
+
+The same function also explains the very first failure: it rejects any preset
+whose feature version is *newer* than the running Vital. The original export
+declared 1.5.5, a number invented from memory, against an installed 1.0.7. It
+would have been refused before a single parameter was read.
+
+The lesson is the one this project keeps relearning in new costumes. Four
+rounds went into inferring a format from its outputs — key names, value
+ranges, key sets, then gain staging — and each round found something real and
+still left it wrong. Reading the *reader* was available the whole time, and once
+it was opened, `LoadSave::jsonToState` explained the corruption and
+`synth_parameters.cpp` explained the level in a single sitting, with every
+mapping stated as a range and a curve rather than inferred from a histogram.
+
+Measuring artefacts was not useless — it is what produced the envelope quartic
+and the log2 LFO rate, neither of which is written down anywhere obvious. But it
+cannot tell you about a field nobody in the sample happened to use, and it
+cannot tell a linear control from a quadratic one when every preset you have was
+written *through* that curve. When a thing has a parser, the parser is a
+specification in disguise, and it should be the first stop rather than the last.
+
+**It loaded, and came out roughly 20 dB quiet.** Two mistakes compounding, both
+of which the source settles outright:
+
+`volume` is a **square-root** control displayed in decibels with an offset of
+-80, so the reading is `sqrt(stored) - 80`: silence is 0, unity is 6400, and the
+ceiling of 7399.44 is +6 dB. Leaving it at the default was leaving the patch at
+-6 dB. And `osc_N_level` is **quadratic** {d} the amplitude is the *square* of
+the stored value. Writing a linear level there halved it in decibels a second
+time, so folding the master gain in beforehand, as this exporter did, squared an
+already-reduced number.
+
+The derivation confirms itself from a direction it never used: a gain of one
+half maps to 5472.95, and Vital's own default volume is 5473.04. The default is
+exactly -6 dB.
+
+Unison detune fell out of the same page {d} quadratic on 0 to 10, displayed as a
+percentage, which is why 124 presets sit on 4.4721: the square root of twenty,
+for a default of 20%. That was the one mapping still marked as assumed, and it
+was assumed wrongly.
+
+**The declaration is now a fixture, and the exporter is checked against it.**
+`tests/golden/vital/parameters.json` holds Vital's own `ValueDetails` for every
+parameter this writes {d} range, default, curve, offset {d} copied from
+`synth_parameters.cpp` with its provenance and a note on how to refresh it. Two
+tests use it. One exports a plain patch, an extreme one and a noise one, and
+asserts every numeric value lands inside its declared range and that indexed
+controls are whole numbers. The other puts each mapping *back* through the
+declared curve and checks it returns what went in: seconds through the quartic,
+amplitude through the quadratic, hertz through the exponential, decibels through
+the square root.
+
+The second is the one that matters, because range alone would not have caught
+the two bugs that actually shipped. A linear oscillator level and a default
+master volume are both perfectly inside their ranges and both wrong by 6 dB.
+
+Confirmed to fail on demand, since a test nobody has seen fail is a test nobody
+has: each of the four historical bugs was reintroduced in turn and the suite
+caught every one {d} a linear level (2 cases), envelope times as seconds (3),
+volume left at its default (1), LFO rate in hertz (2). That is the cheap 80% of
+a real integration test. It cannot hear anything, but every mistake this
+exporter has actually made was a legal-looking number that sat outside or askew
+of a declaration, and all of them would now fail without a build of Vital, a
+listener, or a round trip through a person.
+
+**What remains** is whether it sounds right, which is still a listening test. What can be said is that every settings key the
+exporter writes appears in real 1.0.7 presets {d} it invents nothing {d} and that
+`test_vital_export.cpp` decodes the base64 back to samples and projects them onto
+the sines that went in: a frame asking for a fundamental and a half-amplitude
+third harmonic comes back with exactly that and nothing on the second, and an
+undrawn square comes back as odd harmonics falling as 1/k.
+
+**On versions.** The preset declares 1.0.7, and the format has been additive
+across every version on hand: comparing 0.6, 0.8, 0.9 and 1.0 presets, no
+settings key present in an older one is missing from a newer one, and 1.0 has
+776 keys against 0.8's 775. A preset written to the 1.0 vocabulary should
+therefore load in later versions with the newer parameters at their defaults.
+That is an argument from four versions of evidence, not a guarantee about a
+version nobody here has.
+
 ### Noise as a waveform
 
 Two attempts to give the noise bed an envelope failed by bolting one on beside
@@ -1367,9 +1523,11 @@ waits until after the exporter.
   differences across compilers may need the tolerances revisited on evidence
   rather than by loosening them.
 - **macOS support.** Same shape as Linux, plus AU packaging and code signing.
-- **Exporters.** Vital's preset format is JSON and the natural first target.
-  Validate by exporting, rendering in real Vital, and comparing against this
-  engine's render.
+- ~~Exporters.~~ **Working, and checked against Vital's own declarations** — `VitalExport`, plus
+  `autosynth_probe --vital out.vital` and an *Export Vital* button in the
+  editor. See [Exporting to Vital](#exporting-to-vital). It needs one load in
+  real Vital to confirm the numeric skews; the structure and the wavetable are
+  covered by tests here.
 - **Stereo.** Rendering is easy. *Fitting* is a separate project: the analysis
   chain is mono by construction, and the IR has no pan or unison stereo spread,
   so there is nothing to widen yet. Treat it as its own phase.

@@ -1,0 +1,41 @@
+{
+  "_source": "Vital's src/common/synth_parameters.cpp, ValueDetails table",
+  "_why": "The exporter writes numbers into someone else's synth. Every mapping it got wrong -- envelope times as seconds, LFO rate in hertz, tune in cents, a linear value into a quadratic control, a master gain 6 dB under its own headroom -- was a legal-looking number outside or askew of the range declared here. Checking against the declaration catches that class before it needs a listener.",
+  "_regenerate": "Re-read the ValueDetails initialisers for these base names and update in place. Vital only adds parameters between versions, so an entry here going missing upstream is worth investigating rather than deleting.",
+  "_scale_meaning": "kLinear: stored value is the value. kQuadratic: the audible value is the square of the stored one. kQuartic: the fourth power, used for envelope times in seconds. kSquareRoot: the reading is the square root, used by volume in decibels. kExponential: two to the power of the stored value. kIndexed: a whole number.",
+
+  "volume":          { "min": 0.0,   "max": 7399.4404, "default": 5473.0404, "post_offset": -80.0, "scale": "kSquareRoot", "units": "dB" },
+  "polyphony":       { "min": 1.0,   "max": 32.0,      "default": 8.0,       "post_offset": 0.0,   "scale": "kIndexed",    "units": " voices" },
+  "voice_transpose": { "min": -48.0, "max": 48.0,      "default": 0.0,       "post_offset": 0.0,   "scale": "kIndexed",    "units": "" },
+
+  "on":              { "min": 0.0,   "max": 1.0,  "default": 0.0,          "post_offset": 0.0, "scale": "kIndexed",   "units": "" },
+  "level":           { "min": 0.0,   "max": 1.0,  "default": 0.70710678,   "post_offset": 0.0, "scale": "kQuadratic", "units": "" },
+  "transpose":       { "min": -48.0, "max": 48.0, "default": 0.0,          "post_offset": 0.0, "scale": "kIndexed",   "units": "" },
+  "tune":            { "min": -1.0,  "max": 1.0,  "default": 0.0,          "post_offset": 0.0, "scale": "kLinear",    "units": "" },
+  "unison_voices":   { "min": 1.0,   "max": 16.0, "default": 1.0,          "post_offset": 0.0, "scale": "kIndexed",   "units": "v" },
+  "unison_detune":   { "min": 0.0,   "max": 10.0, "default": 4.472135955,  "post_offset": 0.0, "scale": "kQuadratic", "units": "%" },
+  "wave_frame":      { "min": 0.0,   "max": 256.0,"default": 0.0,          "post_offset": 0.0, "scale": "kLinear",    "units": "" },
+
+  "attack":          { "min": 0.0,   "max": 2.37842, "default": 0.1495, "post_offset": 0.0, "scale": "kQuartic", "units": " secs" },
+  "decay":           { "min": 0.0,   "max": 2.37842, "default": 1.0,    "post_offset": 0.0, "scale": "kQuartic", "units": " secs" },
+  "release":         { "min": 0.0,   "max": 2.37842, "default": 0.5476, "post_offset": 0.0, "scale": "kQuartic", "units": " secs" },
+  "sustain":         { "min": 0.0,   "max": 1.0,     "default": 1.0,    "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+  "attack_power":    { "min": -20.0, "max": 20.0,    "default": 0.0,    "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+  "decay_power":     { "min": -20.0, "max": 20.0,    "default": -2.0,   "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+  "release_power":   { "min": -20.0, "max": 20.0,    "default": -2.0,   "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+
+  "cutoff":          { "min": 8.0, "max": 136.0, "default": 60.0, "post_offset": -60.0, "scale": "kLinear",  "units": " semitones" },
+  "resonance":       { "min": 0.0, "max": 1.0,   "default": 0.5,  "post_offset": 0.0,   "scale": "kLinear",  "units": "%" },
+  "model":           { "min": 0.0, "max": 7.0,   "default": 0.0,  "post_offset": 0.0,   "scale": "kIndexed", "units": "" },
+
+  "frequency":       { "min": -7.0, "max": 9.0, "default": 1.0, "post_offset": 0.0, "scale": "kExponential", "units": " secs" },
+  "sync":            { "min": 0.0,  "max": 4.0, "default": 1.0, "post_offset": 0.0, "scale": "kIndexed",     "units": "" },
+  "delay_time":      { "min": 0.0,  "max": 4.0, "default": 0.0, "post_offset": 0.0, "scale": "kLinear",      "units": " secs" },
+  "phase":           { "min": 0.0,  "max": 1.0, "default": 0.0, "post_offset": 0.0, "scale": "kLinear",      "units": "" },
+
+  "amount":          { "min": -1.0,  "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+  "bipolar":         { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
+  "bypass":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
+  "power":           { "min": -10.0, "max": 10.0, "default": 0.0, "post_offset": 0.0, "scale": "kLinear",  "units": "" },
+  "stereo":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" }
+}
