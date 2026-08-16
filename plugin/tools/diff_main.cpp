@@ -112,10 +112,37 @@ struct Measurements
     double pitchWobbleRateHz = 0.0;
     double attackSeconds = 0.0;
     double noteOffSeconds = 0.0;
-    double noisiness = 0.0;           // spectral flatness, 0 tonal .. 1 noise
+    double noisiness = 0.0;           // energy away from the harmonics
     double tailRt60 = 0.0;
     double peak = 0.0;
+    // How much the harmonic profile moves between the first and last thirds of
+    // the note, in dB. A static oscillator scores near zero however wrong its
+    // tone is, so this is a separate question from the profile itself.
+    double timbreDriftDb = 0.0;
+    std::vector<double> profileEarly, profileLate;
 };
+
+// Energy-weighted mean harmonic profile over a frame range, peak-normalised.
+std::vector<double> profileOver (const autosynth::HarmonicGroup& g, int from, int to)
+{
+    std::vector<double> profile (static_cast<size_t> (std::max (g.numHarmonics, 1)), 0.0);
+    if (g.numHarmonics <= 0 || to <= from)
+        return profile;
+
+    for (int k = 0; k < g.numHarmonics; ++k)
+    {
+        const auto* row = g.harmonic (k);
+        double acc = 0.0;
+        for (int t = from; t < to && t < g.numFrames; ++t)
+            acc += row[t];
+        profile[static_cast<size_t> (k)] = acc / std::max (1, to - from);
+    }
+    const auto peak = *std::max_element (profile.begin(), profile.end());
+    if (peak > 1.0e-12)
+        for (auto& v : profile)
+            v /= peak;
+    return profile;
+}
 
 // Rate of a zero-mean signal by counting sign changes. Crude next to a
 // periodogram, and enough here: the question is "about how fast", not "at
@@ -170,30 +197,39 @@ Measurements measure (const std::vector<float>& x, double sampleRate, int hop, i
         m.brightnessLog2 = counted > 0 ? acc / counted : 0.0;
     }
 
-    // Spectral flatness: geometric over arithmetic mean of the magnitude
-    // spectrum. A pitched tone concentrates energy in a few bins and scores
-    // low; noise spreads it and scores high. This is what tells hiss from tone.
+    // Energy that is *not* near a harmonic, as a fraction of the whole.
+    //
+    // Spectral flatness was tried first and is the wrong measure: it cannot
+    // tell hiss from smeared harmonics. A real violin's partials wander with
+    // the vibrato and are slightly inharmonic, which spreads energy across bins
+    // and reads as flat -- the target scored 0.113 where our fit reached only
+    // 0.055 at a noise level that was plainly hissy to listen to. Chasing that
+    // number would have meant adding hiss to imitate smearing.
+    //
+    // Measuring away from the harmonics separates them. Broadband noise lifts
+    // the floor between partials; a wandering partial does not, because it
+    // stays near its own harmonic.
+    if (m.f0 > 20.0)
     {
-        double logSum = 0.0, linSum = 0.0;
-        int counted = 0;
+        const auto binHz = sampleRate / fft;
+        // Two bins either side: a Hann main lobe is about four wide, so this is
+        // the partial itself rather than a guard band around it.
+        const auto guard = 2;
+
+        double harmonicEnergy = 0.0, floorEnergy = 0.0;
         for (int t = 0; t < spectrogram.numFrames; ++t)
         {
             const auto* frame = spectrogram.frame (t);
-            double rowLog = 0.0, rowLin = 0.0;
             for (int k = 1; k < spectrogram.numBins; ++k)
             {
-                const auto v = frame[k] + 1.0e-9;
-                rowLog += std::log (v);
-                rowLin += v;
+                const auto freq = k * binHz;
+                const auto nearest = std::max (1.0, std::round (freq / m.f0));
+                const auto distanceBins = std::abs (freq - nearest * m.f0) / binHz;
+                (distanceBins <= guard ? harmonicEnergy : floorEnergy) += frame[k];
             }
-            const auto bins = spectrogram.numBins - 1;
-            if (rowLin <= 1.0e-9 || bins <= 0)
-                continue;
-            logSum += rowLog / bins;
-            linSum += std::log (rowLin / bins);
-            ++counted;
         }
-        m.noisiness = counted > 0 ? std::exp (logSum / counted - linSum / counted) : 0.0;
+        const auto total = harmonicEnergy + floorEnergy;
+        m.noisiness = total > 1.0e-9 ? floorEnergy / total : 0.0;
     }
 
     // Harmonic profile of the dominant source.
@@ -218,6 +254,27 @@ Measurements measure (const std::vector<float>& x, double sampleRate, int hop, i
         if (peak > 1.0e-12)
             for (auto& v : m.profile)
                 v /= peak;
+
+        // Does the tone move across the note?
+        //
+        // Measured because a filter envelope cannot answer it: on both library
+        // samples the second harmonic swings four to five dB while the third
+        // holds, which is not a brightness sweep and no cutoff setting produces
+        // it. A fit with a static oscillator scores near zero here however
+        // close its average profile is.
+        m.profileEarly = profileOver (g, 0, g.numFrames / 3);
+        m.profileLate = profileOver (g, 2 * g.numFrames / 3, g.numFrames);
+
+        double drift = 0.0;
+        int counted = 0;
+        for (size_t k = 0; k < std::min<size_t> (6, m.profileEarly.size()); ++k)
+        {
+            const auto a = 20.0 * std::log10 (std::max (m.profileEarly[k], 1.0e-4));
+            const auto b = 20.0 * std::log10 (std::max (m.profileLate[k], 1.0e-4));
+            drift += std::abs (b - a);
+            ++counted;
+        }
+        m.timbreDriftDb = counted > 0 ? drift / counted : 0.0;
     }
 
     // Envelope: attack and note-off.
@@ -229,7 +286,7 @@ Measurements measure (const std::vector<float>& x, double sampleRate, int hop, i
     const auto gate = autosynth::EnvelopeFit::detectGate (loudness, times);
     m.noteOffSeconds = gate.time;
     const auto env = autosynth::EnvelopeFit::fitAdsr (loudness, times, gate.time, 0.05f, gate.oneShot);
-    m.attackSeconds = env.attack;
+    m.attackSeconds = autosynth::EnvelopeFit::attackSeconds (loudness, times);
 
     // Modulation, measured over the sustained middle so the attack and the
     // release do not read as wobble.
@@ -396,6 +453,9 @@ int main (int argc, char* argv[])
     line ("note-off", juce::String (a.noteOffSeconds, 2) + " s", juce::String (b.noteOffSeconds, 2) + " s",
           verdictFor (a.noteOffSeconds, b.noteOffSeconds, 0.1, "early", "late", " s"));
 
+    line ("timbre drift", rounded (a.timbreDriftDb, 1) + " dB", rounded (b.timbreDriftDb, 1) + " dB",
+          verdictFor (a.timbreDriftDb, b.timbreDriftDb, 1.0, "too static", "too restless", " dB"));
+
     line ("peak level", juce::String (a.peak, 3), juce::String (b.peak, 3),
           verdictFor (20.0 * std::log10 (std::max (a.peak, 1.0e-6)),
                       20.0 * std::log10 (std::max (b.peak, 1.0e-6)), 2.0,
@@ -446,6 +506,13 @@ int main (int argc, char* argv[])
                      row.name, d.rateHz, d.concentration, d.correlation, d.relativeAmplitude,
                      d.oscillationRatio,
                      d.found ? "ACCEPTED" : (d.rejectedBy ? d.rejectedBy : "not analysed"));
+
+        // Whether that rate holds still. A steady LFO keeps one period; a
+        // player does not, and the difference is what makes a fit sound
+        // mechanical even when its depth is right.
+        const auto w = autosynth::Modulation::detectWander (*row.data, trajectories.dt);
+        std::printf ("           wander %5.2f Hz   %.2f octaves over %d cycles   -> %s\n",
+                     w.rateHz, w.octaves, w.cycles, w.found ? "DRIFTS" : "steady");
     }
 
     std::printf ("\n");

@@ -9,6 +9,7 @@
 
 #include "Helpers.h"
 
+#include "dsp/Envelope.h"
 #include "fit/CmaEs.h"
 #include "fit/EffectsFit.h"
 #include "fit/EnvelopeFit.h"
@@ -644,4 +645,81 @@ TEST_CASE ("refinement scope covers the reverb only when it is on", "[fit]")
     // sample efficiency falls off with dimension.
     CHECK_FALSE (mentionsReverb (scopeOff));
     CHECK (mentionsReverb (scopeOn));
+}
+
+// The envelope the fitter writes has to measure back as what it measured.
+//
+// `fitAdsr` returns a *parameter* and `attackSeconds` returns a *measurement*,
+// and they are only the same number when the curve is linear. Before the two
+// were separated, a violin measured at 0.401 s was written as an attack of
+// 0.401 with a curve of 3 and rendered as 0.277 -- and the diagnostic then
+// reported an attack error the analysis had not made.
+TEST_CASE ("a fitted attack renders as the attack that was measured", "[envelope]")
+{
+    for (const float wanted : { 0.05f, 0.2f, 0.5f })
+    {
+        INFO ("wanted " << wanted);
+
+        // A contour that ramps linearly to full over `wanted`, then holds.
+        constexpr double fps = 200.0;
+        constexpr double gate = 2.0;
+        std::vector<float> curve, times;
+        for (int i = 0; i < static_cast<int> (fps * 2.5); ++i)
+        {
+            const auto t = i / fps;
+            times.push_back (static_cast<float> (t));
+            curve.push_back (t < wanted ? static_cast<float> (t / wanted) : 1.0f);
+        }
+
+        // The definition, pinned: onset (5% of full) to nine tenths of full.
+        // On a linear ramp that is 85% of the ramp's length.
+        const auto measured = autosynth::EnvelopeFit::attackSeconds (curve, times);
+        CHECK (measured == Catch::Approx (0.85 * wanted).margin (0.02));
+
+        // Render the fitted envelope over the same grid and measure it the same
+        // way. Any disagreement here is the fitter writing one thing and the
+        // engine playing another.
+        const auto env = autosynth::EnvelopeFit::fitAdsr (curve, times, gate, 0.05f, false);
+        std::vector<float> rendered (times.size());
+        for (size_t i = 0; i < times.size(); ++i)
+            rendered[i] = autosynth::Envelope::evaluate (env, times[i], gate);
+
+        const auto back = autosynth::EnvelopeFit::attackSeconds (rendered, times);
+        CHECK (back == Catch::Approx (measured).margin (0.05));
+    }
+}
+
+// The same invariant, held against a curve the optimiser chose rather than the
+// one the fit did.
+//
+// This is what the first version got wrong. It assumed the crossing was a fixed
+// fraction of the attack segment, which is only true when the decay does not
+// pull the level down underneath it: `attackSeconds` measures nine tenths of
+// the level the note *holds*, not of the attack's own peak. With a decay to a
+// sustain of 0.45 the two are far apart, and a violin whose envelope should
+// have measured 0.40 s rendered at 0.29.
+TEST_CASE ("the attack solve survives a change of curve", "[envelope]")
+{
+    constexpr double fps = 200.0;
+    constexpr double gate = 2.0;
+    std::vector<float> times (static_cast<size_t> (fps * 2.5));
+    for (size_t i = 0; i < times.size(); ++i)
+        times[i] = static_cast<float> (i / fps);
+
+    for (const float curve : { 0.0f, 1.5f, 3.0f })
+        for (const float sustain : { 1.0f, 0.45f })
+        {
+            INFO ("curve " << curve << " sustain " << sustain);
+
+            autosynth::Adsr env { 0.2f, 0.15f, sustain, 0.2f, curve };
+            constexpr float wanted = 0.35f;
+            env.attack = autosynth::EnvelopeFit::attackMeasuring (env, gate, wanted);
+
+            std::vector<float> rendered (times.size());
+            for (size_t i = 0; i < times.size(); ++i)
+                rendered[i] = autosynth::Envelope::evaluate (env, times[i], gate);
+
+            CHECK (autosynth::EnvelopeFit::attackSeconds (rendered, times)
+                       == Catch::Approx (wanted).margin (0.02));
+        }
 }

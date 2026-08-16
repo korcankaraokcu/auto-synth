@@ -25,10 +25,11 @@ juce::NormalisableRange<float> logRange (float min, float max)
     return range;
 }
 
-const juce::StringArray kWaveforms { "Sine", "Triangle", "Saw", "Square", "Pulse" };
+const juce::StringArray kWaveforms { "Sine", "Triangle", "Saw", "Square", "Pulse", "Noise" };
 const juce::StringArray kFilterTypes { "Off", "Low pass", "High pass", "Band pass" };
 const juce::StringArray kLfoShapes { "Sine", "Triangle", "Saw", "Square" };
-const juce::StringArray kLfoDests { "None", "Pitch", "Amp", "Cutoff" };
+const juce::StringArray kLfoDests { "None", "Pitch", "Amp", "Cutoff",
+                                    "LFO rate", "LFO depth" };
 
 using Layout = juce::AudioProcessorValueTreeState::ParameterLayout;
 
@@ -121,7 +122,7 @@ const std::vector<Accessor>& accessors()
             out.push_back ({ p + ".waveform",
                              [index] (const Patch& x) { return static_cast<float> (x.oscs[index].waveform); },
                              [index] (Patch& x, float v) { x.oscs[index].waveform =
-                                 static_cast<Waveform> (juce::jlimit (0, 4, static_cast<int> (std::lround (v)))); } });
+                                 static_cast<Waveform> (juce::jlimit (0, 5, static_cast<int> (std::lround (v)))); } });
             out.push_back ({ p + ".semitones",
                              [index] (const Patch& x) { return static_cast<float> (x.oscs[index].semitones); },
                              [index] (Patch& x, float v) { x.oscs[index].semitones = static_cast<int> (std::lround (v)); } });
@@ -144,10 +145,26 @@ const std::vector<Accessor>& accessors()
             out.push_back ({ p + ".waveform_b",
                              [index] (const Patch& x) { return static_cast<float> (x.oscs[index].waveformB); },
                              [index] (Patch& x, float v) { x.oscs[index].waveformB =
-                                 static_cast<Waveform> (juce::jlimit (0, 4, static_cast<int> (std::lround (v)))); } });
+                                 static_cast<Waveform> (juce::jlimit (0, 5, static_cast<int> (std::lround (v)))); } });
             out.push_back ({ p + ".wave_morph",
                              [index] (const Patch& x) { return x.oscs[index].waveMorph; },
                              [index] (Patch& x, float v) { x.oscs[index].waveMorph = v; } });
+            // The frame *data* is deliberately absent. Harmonic amplitudes are
+            // not knobs: they change only when a patch is loaded, analysed or
+            // drawn on, and exposing them would let a host automate an FFT onto
+            // the audio thread.
+            out.push_back ({ p + ".num_frames",
+                             [index] (const Patch& x) { return static_cast<float> (x.oscs[index].numFrames); },
+                             [index] (Patch& x, float v) { x.oscs[index].numFrames =
+                                 juce::jlimit (1, Oscillator::kMaxFrames, static_cast<int> (std::lround (v))); } });
+            out.push_back ({ p + ".frame_position",
+                             [index] (const Patch& x) { return x.oscs[index].framePosition; },
+                             [index] (Patch& x, float v) { x.oscs[index].framePosition = v; } });
+            out.push_back ({ p + ".frame_position_env_amount",
+                             [index] (const Patch& x) { return x.oscs[index].framePositionEnvAmount; },
+                             [index] (Patch& x, float v) { x.oscs[index].framePositionEnvAmount = v; } });
+            addAdsrAccessors (out, p + ".frame_position_env");
+
             out.push_back ({ p + ".reverb_send",
                              [index] (const Patch& x) { return x.oscs[index].reverbSend; },
                              [index] (Patch& x, float v) { x.oscs[index].reverbSend = v; } });
@@ -204,7 +221,7 @@ const std::vector<Accessor>& accessors()
             out.push_back ({ p + ".dest",
                              [index] (const Patch& x) { return static_cast<float> (x.lfos[index].dest); },
                              [index] (Patch& x, float v) { x.lfos[index].dest =
-                                 static_cast<LfoDest> (juce::jlimit (0, 3, static_cast<int> (std::lround (v)))); } });
+                                 static_cast<LfoDest> (juce::jlimit (0, 5, static_cast<int> (std::lround (v)))); } });
             out.push_back ({ p + ".rate_hz",
                              [index] (const Patch& x) { return x.lfos[index].rateHz; },
                              [index] (Patch& x, float v) { x.lfos[index].rateHz = v; } });
@@ -289,6 +306,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             juce::ParameterID { idFor (p + ".waveform_b"), 1 }, label + "wave B",
             kWaveforms, static_cast<int> (osc.waveformB)));
         addFloat (layout, p + ".wave_morph", label + "morph", { 0.0f, 1.0f }, osc.waveMorph);
+        layout.add (std::make_unique<juce::AudioParameterInt> (
+            juce::ParameterID { idFor (p + ".num_frames"), 1 }, label + "frames",
+            1, Oscillator::kMaxFrames, osc.numFrames));
+        addFloat (layout, p + ".frame_position", label + "frame", { 0.0f, 1.0f }, osc.framePosition);
+        addFloat (layout, p + ".frame_position_env_amount", label + "frame env amt",
+                  { -1.0f, 1.0f }, osc.framePositionEnvAmount);
+        addAdsr (layout, p + ".frame_position_env", label + "frame env", osc.framePositionEnv);
         addFloat (layout, p + ".reverb_send", label + "verb send", { 0.0f, 1.0f }, osc.reverbSend);
         layout.add (std::make_unique<juce::AudioParameterBool> (
             juce::ParameterID { idFor (p + ".env_enabled"), 1 }, label + "own env", osc.envEnabled));

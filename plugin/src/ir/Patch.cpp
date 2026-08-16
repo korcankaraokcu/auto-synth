@@ -57,10 +57,12 @@ T parseEnum (const juce::String& text, const std::array<const char*, N>& names, 
     return fallback;
 }
 
-const std::array<const char*, 5> kWaveformNames { "sine", "triangle", "saw", "square", "pulse" };
+const std::array<const char*, 6> kWaveformNames { "sine", "triangle", "saw", "square",
+                                                  "pulse", "noise" };
 const std::array<const char*, 4> kFilterNames { "off", "lowpass", "highpass", "bandpass" };
 const std::array<const char*, 4> kLfoShapeNames { "sine", "triangle", "saw", "square" };
-const std::array<const char*, 4> kLfoDestNames { "none", "pitch", "amp", "cutoff" };
+const std::array<const char*, 6> kLfoDestNames { "none", "pitch", "amp", "cutoff",
+                                                 "lfo_rate", "lfo_depth" };
 
 Adsr parseAdsr (const juce::var& v, const Adsr& fallback)
 {
@@ -72,6 +74,7 @@ Adsr parseAdsr (const juce::var& v, const Adsr& fallback)
     a.sustain = getFloat (v, "sustain", fallback.sustain);
     a.release = getFloat (v, "release", fallback.release);
     a.curve = getFloat (v, "curve", fallback.curve);
+    a.attackCurve = getFloat (v, "attack_curve", fallback.attackCurve);
     return a;
 }
 
@@ -110,6 +113,31 @@ Patch Patch::fromJson (const juce::var& json)
                                      kWaveformNames, o.waveform);
             o.waveMorph = getFloat (v, "wave_morph", o.waveMorph);
             o.reverbSend = getFloat (v, "reverb_send", o.reverbSend);
+            o.numFrames = juce::jlimit (1, Oscillator::kMaxFrames,
+                                        getInt (v, "num_frames", o.numFrames));
+            o.framePosition = getFloat (v, "frame_position", o.framePosition);
+            o.framePositionEnvAmount = getFloat (v, "frame_position_env_amount",
+                                                 o.framePositionEnvAmount);
+            o.framePositionEnv = parseAdsr (getChild (v, "frame_position_env"), o.framePositionEnv);
+            // Frames are an array of arrays: one harmonic series per drawn
+            // frame, and `null` for a frame still generated from the waveform
+            // above. A missing array leaves every frame generated, which is
+            // what an analog patch is.
+            if (auto* rows = getChild (v, "frames").getArray())
+            {
+                for (int f = 0; f < juce::jmin (Oscillator::kMaxFrames, rows->size()); ++f)
+                {
+                    auto& frame = o.frames[static_cast<size_t> (f)];
+                    if (auto* amps = (*rows)[f].getArray())
+                    {
+                        frame.custom = true;
+                        const auto n = juce::jmin (Oscillator::kFrameHarmonics, amps->size());
+                        for (int k = 0; k < n; ++k)
+                            frame.harmonics[static_cast<size_t> (k)] =
+                                static_cast<float> (static_cast<double> ((*amps)[k]));
+                    }
+                }
+            }
             o.envEnabled = getBool (v, "env_enabled", o.envEnabled);
             o.env = parseAdsr (getChild (v, "env"), o.env);
             o.filterEnabled = getBool (v, "filter_enabled", o.filterEnabled);
@@ -193,6 +221,7 @@ juce::var adsrToVar (const Adsr& a)
     obj->setProperty ("sustain", a.sustain);
     obj->setProperty ("release", a.release);
     obj->setProperty ("curve", a.curve);
+    obj->setProperty ("attack_curve", a.attackCurve);
     return juce::var (obj);
 }
 } // namespace
@@ -214,6 +243,28 @@ juce::String Patch::toJson() const
         obj->setProperty ("waveform_b", kWaveformNames[static_cast<size_t> (o.waveformB)]);
         obj->setProperty ("wave_morph", o.waveMorph);
         obj->setProperty ("reverb_send", o.reverbSend);
+        obj->setProperty ("num_frames", o.numFrames);
+        obj->setProperty ("frame_position", o.framePosition);
+        obj->setProperty ("frame_position_env_amount", o.framePositionEnvAmount);
+        obj->setProperty ("frame_position_env", adsrToVar (o.framePositionEnv));
+        // Only the drawn frames are written out. A patch of five analog
+        // oscillators should not carry eighty rows of numbers describing a saw
+        // that is already named on the line above.
+        juce::Array<juce::var> frameArray;
+        for (int f = 0; f < o.numFrames; ++f)
+        {
+            const auto& frame = o.frames[static_cast<size_t> (f)];
+            if (! frame.custom)
+            {
+                frameArray.add (juce::var());
+                continue;
+            }
+            juce::Array<juce::var> amps;
+            for (const auto a : frame.harmonics)
+                amps.add (a);
+            frameArray.add (juce::var (amps));
+        }
+        obj->setProperty ("frames", juce::var (frameArray));
         obj->setProperty ("env_enabled", o.envEnabled);
         obj->setProperty ("env", adsrToVar (o.env));
 

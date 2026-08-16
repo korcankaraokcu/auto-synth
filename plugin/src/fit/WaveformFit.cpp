@@ -57,6 +57,11 @@ struct Candidate
 std::vector<Candidate> buildCandidates (int numHarmonics)
 {
     std::vector<Candidate> out;
+    // Noise is deliberately absent. Its profile is flat, and a flat profile is
+    // close enough to a badly-measured one that the matcher would reach for it
+    // whenever the analysis was struggling -- describing a pitched note as
+    // noise, which is the least useful thing a patch can say. Only the branch
+    // that has already decided a sound is unpitched selects it.
     const Waveform all[] = { Waveform::sine, Waveform::triangle, Waveform::saw,
                              Waveform::square, Waveform::pulse };
 
@@ -223,6 +228,12 @@ WaveformFit::Blend WaveformFit::matchBlend (const std::vector<float>& profile, i
         best.waveformB = best.waveform;
     }
     return best;
+}
+
+std::vector<float> WaveformFit::profileFor (const Blend& blend, int numHarmonics)
+{
+    return WaveTables::blendedHarmonics (blend.waveform, blend.waveformB, blend.morph,
+                                         blend.pulseWidth, numHarmonics);
 }
 
 WaveformFit::Match WaveformFit::matchWithCutoff (const std::vector<float>& profile, double f0Hz,

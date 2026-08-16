@@ -2279,26 +2279,6 @@
    "unison_voices": 1,
    "unison_detune": 0.0,
    "detune_cents": 0.624632257143918
-  },
-  {
-   "f0": 1840.950854817567,
-   "salience": 21.325218343734736,
-   "energy": 35.542030334472656,
-   "num_partials": 19,
-   "num_harmonics": 13,
-   "unison_voices": 2,
-   "unison_detune": 50.0,
-   "detune_cents": 28.64838757258415
-  },
-  {
-   "f0": 1936.4323632992541,
-   "salience": 17.00399072170257,
-   "energy": 26.622730255126953,
-   "num_partials": 14,
-   "num_harmonics": 12,
-   "unison_voices": 2,
-   "unison_detune": 43.334922790527344,
-   "detune_cents": 24.34137616408432
   }
  ],
  "gate": {
@@ -2306,11 +2286,11 @@
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.005333333333333333,
-  "decay": 0.005,
-  "sustain": 0.9998430084383977,
-  "release": 0.005,
-  "curve": 0.0
+  "attack": 0.001000059535727,
+  "decay": 0.004999999888241,
+  "sustain": 0.999843001365662,
+  "release": 0.004999999888241,
+  "curve": 0.5
  },
  "waveform_fit": {
   "waveform": "square",
@@ -2579,7 +2559,7 @@
     "enabled": true,
     "waveform": "square",
     "semitones": 0,
-    "cents": 0.0,
+    "cents": 4.1090152081e-05,
     "level": 1.0,
     "unison_voices": 1,
     "unison_detune": 0.0
@@ -2587,27 +2567,27 @@
    {
     "enabled": false,
     "waveform": "saw",
-    "semitones": 24,
-    "cents": 50.0,
+    "semitones": 0,
+    "cents": 0.0,
     "level": 0.0,
-    "unison_voices": 2,
-    "unison_detune": 50.0
+    "unison_voices": 1,
+    "unison_detune": 0.0
    },
    {
     "enabled": false,
-    "waveform": "pulse",
-    "semitones": 24,
-    "cents": 50.0,
+    "waveform": "saw",
+    "semitones": 0,
+    "cents": 0.0,
     "level": 0.0,
-    "unison_voices": 2,
-    "unison_detune": 43.33502207114671
+    "unison_voices": 1,
+    "unison_detune": 0.0
    }
   ],
-  "root_hz": 219.94640152477305,
-  "cutoff_hz": 14954.496986638163,
+  "root_hz": 220.0021209716797,
+  "cutoff_hz": 14954.658203125,
   "env_amount": 0.0,
-  "noise_level": 0.007779395311110223,
-  "master_level": 0.640774187047518,
+  "noise_level": 0.0,
+  "master_level": 0.641209185123444,
   "active_oscs": 1
  }
 }

@@ -411,6 +411,12 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
         paths.push_back (p + ".unison_detune");
         paths.push_back (p + ".wave_morph");
         paths.push_back (p + ".reverb_send");
+        // The wavetable is absent on purpose, frames and position alike. The
+        // frames are a measurement, and the position is the trajectory that
+        // measurement was taken along -- refining either would be re-deciding
+        // structure with a distance metric, which is the split this project
+        // keeps: analysis owns what was measured, refinement owns precision.
+        // It is the same reason the LFO rate is not in this list.
         if (osc.envEnabled)
             for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
                 paths.push_back (p + ".env." + leaf);
@@ -527,15 +533,118 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
         gate = detected.oneShot ? duration : detected.time;
     }
 
-    std::vector<double> x0 (scope.size());
+    // Noise is measured, and refinement may only sharpen it.
+    //
+    // It is set closed-loop before this runs -- render, measure the energy
+    // between the harmonics, scale, repeat -- against the same quantity
+    // `autosynth_diff` reports as noisiness. Left at its full range, refinement
+    // undid that: a violin calibrated to 0.05 came back at 0.015 with its bow
+    // stripped off, because broadband energy lowers a log-spectral error
+    // wherever the harmonic fit is imperfect and the optimiser always finds
+    // that trade.
+    //
+    // Removing it from the search entirely was tried and costs more than it
+    // saves -- CMA-ES loses a dimension and lands elsewhere, which put the
+    // harness's brightness error up by a third on patches whose noise was
+    // already zero. Half to double, like the measured attack before it.
+    constexpr double kNoiseSearchFactor = 2.0;
+    std::vector<Spec> specs;
+    specs.reserve (scope.size());
+    for (const auto& path : scope)
+    {
+        auto spec = table.at (path);
+        if (path == "noise_level")
+        {
+            const auto measured = getParameter (patch, path);
+            spec.lo = juce::jmax (spec.lo, measured / kNoiseSearchFactor);
+            spec.hi = juce::jmin (spec.hi, measured * kNoiseSearchFactor);
+            if (spec.hi <= spec.lo)
+                spec.hi = spec.lo + 1.0e-6;
+        }
+        specs.push_back (spec);
+    }
+
+    // Attack is derived, not searched.
+    //
+    // It is a measurement: the analysis knows how long the note took to reach
+    // nine tenths of the level it holds, and a spectral distance is nearly
+    // blind to the first tenth of a second and will spend it buying accuracy
+    // elsewhere. Given its full range the optimiser moved a violin's attack to
+    // 0.12 s and a clarinet's to 0.50 -- opposite directions, both away from
+    // the truth.
+    //
+    // Bounding the *parameter* was tried and is not enough, because the
+    // rendered attack depends on the attack and the curve *together* and the
+    // curve is legitimately searchable. Held to half-to-double, a violin whose
+    // envelope should measure 0.40 s still rendered at 0.29, because refinement
+    // had flattened the curve underneath it.
+    //
+    // So what is held fixed is the thing that was measured -- the crossing time
+    // -- and the attack is re-derived from it against whatever curve the
+    // candidate chose. CMA-ES keeps the curve; the envelope keeps its shape in
+    // time.
+    struct DerivedAttack
+    {
+        std::string prefix;   // the envelope, without the trailing field
+        float crossingSeconds = 0.0f;
+    };
+
+    const auto envelopeAt = [] (const Patch& p, const std::string& prefix)
+    {
+        Adsr env;
+        env.attack = static_cast<float> (getParameter (p, prefix + ".attack"));
+        env.decay = static_cast<float> (getParameter (p, prefix + ".decay"));
+        env.sustain = static_cast<float> (getParameter (p, prefix + ".sustain"));
+        env.release = static_cast<float> (getParameter (p, prefix + ".release"));
+        env.curve = static_cast<float> (getParameter (p, prefix + ".curve"));
+        return env;
+    };
+
+    // What each envelope currently measures as, which is what has to survive.
+    const auto crossingOf = [&] (const Adsr& env)
+    {
+        constexpr double fps = 200.0;
+        const auto span = juce::jmax (gate, 0.5);
+        const auto count = juce::jlimit (16, 4000, static_cast<int> (std::lround (span * fps)));
+        std::vector<float> times (static_cast<size_t> (count)), rendered (static_cast<size_t> (count));
+        for (int i = 0; i < count; ++i)
+        {
+            times[static_cast<size_t> (i)] = static_cast<float> (i / fps);
+            rendered[static_cast<size_t> (i)] = Envelope::evaluate (env, times[static_cast<size_t> (i)], gate);
+        }
+        return EnvelopeFit::attackSeconds (rendered, times);
+    };
+
+    std::vector<DerivedAttack> derived;
+    std::vector<std::string> searched;
+    std::vector<Spec> searchedSpecs;
     for (size_t i = 0; i < scope.size(); ++i)
-        x0[i] = encode (table.at (scope[i]), getParameter (patch, scope[i]));
+    {
+        const auto& path = scope[i];
+        if (path.size() >= 7 && path.compare (path.size() - 7, 7, ".attack") == 0)
+        {
+            const auto prefix = path.substr (0, path.size() - 7);
+            derived.push_back ({ prefix, crossingOf (envelopeAt (patch, prefix)) });
+            continue;
+        }
+        searched.push_back (path);
+        searchedSpecs.push_back (specs[i]);
+    }
+
+    std::vector<double> x0 (searched.size());
+    for (size_t i = 0; i < searched.size(); ++i)
+        x0[i] = encode (searchedSpecs[i], getParameter (patch, searched[i]));
 
     const auto build = [&] (const std::vector<double>& x)
     {
         auto out = patch;
-        for (size_t i = 0; i < scope.size(); ++i)
-            setParameter (out, scope[i], decode (table.at (scope[i]), x[i]));
+        for (size_t i = 0; i < searched.size(); ++i)
+            setParameter (out, searched[i], decode (searchedSpecs[i], x[i]));
+
+        for (const auto& d : derived)
+            setParameter (out, d.prefix + ".attack",
+                          EnvelopeFit::attackMeasuring (envelopeAt (out, d.prefix), gate,
+                                                        d.crossingSeconds));
         return out;
     };
 

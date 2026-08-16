@@ -30,7 +30,10 @@ add_library(autosynth_dsp STATIC
     src/analysis/Yin.cpp
     src/analysis/Partials.cpp
     src/analysis/Grouping.cpp
+    src/analysis/Roles.cpp
+    src/fit/Nmf.cpp
     src/fit/WaveformFit.cpp
+    src/fit/WavetableFit.cpp
     src/fit/EnvelopeFit.cpp
     src/fit/FilterFit.cpp
     src/fit/Modulation.cpp
@@ -186,6 +189,8 @@ if(AUTOSYNTH_BUILD_TESTS)
         tests/test_capabilities.cpp
         tests/test_recovery.cpp
         tests/test_unison.cpp
+        tests/test_nmf.cpp
+        tests/test_wavetable.cpp
         tests/test_golden_engine.cpp
         tests/test_golden_analysis.cpp)
 

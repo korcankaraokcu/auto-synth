@@ -2086,10 +2086,10 @@
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.001,
-  "decay": 0.005333333333333333,
-  "sustain": 0.9042665361869854,
-  "release": 0.005,
+  "attack": 0.001000059535727,
+  "decay": 0.970666646957397,
+  "sustain": 0.904266595840454,
+  "release": 0.004999999888241,
   "curve": 8.0
  },
  "waveform_fit": {
@@ -2333,7 +2333,7 @@
     "enabled": true,
     "waveform": "saw",
     "semitones": 0,
-    "cents": 0.0,
+    "cents": -5.3213669162e-05,
     "level": 1.0,
     "unison_voices": 1,
     "unison_detune": 0.0
@@ -2342,8 +2342,8 @@
     "enabled": true,
     "waveform": "square",
     "semitones": 7,
-    "cents": 3.1586585490649632,
-    "level": 0.3693846041624687,
+    "cents": 1.966655850410461,
+    "level": 0.307992964982986,
     "unison_voices": 1,
     "unison_detune": 0.0
    },
@@ -2357,11 +2357,11 @@
     "unison_detune": 0.0
    }
   ],
-  "root_hz": 219.82543917564382,
+  "root_hz": 219.99932861328125,
   "cutoff_hz": 18000.0,
   "env_amount": 0.0,
   "noise_level": 0.0,
-  "master_level": 0.2270799059376183,
+  "master_level": 0.25900986790657,
   "active_oscs": 2
  }
 }

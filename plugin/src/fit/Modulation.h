@@ -117,6 +117,45 @@ public:
         const char* rejectedBy = nullptr;
     };
 
+    // How fast a zero-mean trajectory oscillates, in Hz, by periodogram.
+    //
+    // Public so the diagnostic can report the same number the fitter acts on.
+    // `autosynth_diff` used to have its own estimator -- smooth, then count
+    // sign changes -- which read a pure 3.31 Hz sine as 2.8 Hz, because the
+    // smoothing that makes crossing-counting usable also removes the crossings.
+    // That cost an afternoon: a clarinet whose tremolo rate the fitter had
+    // measured correctly was reported as running at nearly double the target's,
+    // and the hunt went into the estimator that was right.
+    static double dominantRateHz (const std::vector<float>& trajectory, double dt);
+
+    // Whether a modulation's *rate* drifts, and how.
+    //
+    // A single LFO is one spike in the spectrum, and a spike is what reads as
+    // mechanical: measured on a clarinet, the recording's amplitude spectrum
+    // spreads from 0.4 to 3.6 Hz with no dominant peak while the fit put it all
+    // at 3.2, and a listener called the fit more vibrato-heavy than the original
+    // despite it measuring *shallower*.
+    //
+    // Measured from the wobble's own period, cycle by cycle. A steady LFO holds
+    // one period; a player's does not, and how fast that period wanders is
+    // itself an oscillation a second LFO can reproduce -- which keeps the patch
+    // readable, unlike a noise source.
+    struct Wander
+    {
+        bool found = false;
+        double rateHz = 0.0;      // how fast the period drifts
+        double octaves = 0.0;     // how far it drifts, in octaves of rate
+        int cycles = 0;           // how many periods it was measured over
+    };
+
+    // A wobble whose period holds to within a fifth of an octave is an LFO, not
+    // a player. And it takes several cycles to tell: two periods that differ
+    // prove nothing.
+    static constexpr double kMinWanderOctaves = 0.20;
+    static constexpr int kMinWanderCycles = 5;
+
+    static Wander detectWander (const std::vector<float>& detrended, double dt);
+
     static Detected analyseTrajectory (const std::vector<float>& trajectory, double dt,
                                        LfoDest dest);
 

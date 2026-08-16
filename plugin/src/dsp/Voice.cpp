@@ -20,10 +20,12 @@ double unisonOffsetCents (int voiceIndex, int numVoices, float spreadCents) noex
 // Voice
 // --------------------------------------------------------------------------
 
-void Voice::prepare (double sr, const WaveTables* sharedTables)
+void Voice::prepare (double sr, const WaveTables* sharedTables,
+                     const std::array<WaveTables::FrameTables, kNumOsc>* oscFrameTables)
 {
     sampleRate = sr;
     tables = sharedTables;
+    frameTables = oscFrameTables;
     ampEnv.prepare (sr);
     filterEnv.prepare (sr);
     for (auto& l : lfos)
@@ -34,6 +36,7 @@ void Voice::prepare (double sr, const WaveTables* sharedTables)
     {
         osc.env.prepare (sr);
         osc.filterEnv.prepare (sr);
+        osc.frameEnv.prepare (sr);
         osc.filter.prepare (sr);
     }
     reset();
@@ -58,6 +61,7 @@ void Voice::setPatch (const Patch& p)
         dst.useEnv = src.envEnabled;
         dst.env.setParameters (src.env);
         dst.useFilter = src.filterEnabled && src.filter.type != FilterType::off;
+        dst.frameEnv.setParameters (src.framePositionEnv);
         dst.filterEnv.setParameters (src.filter.env);
         dst.filter.setType (src.filter.type);
         for (int v = 0; v < dst.numVoices; ++v)
@@ -113,6 +117,8 @@ void Voice::noteOn (int note, float vel)
     {
         osc.env.noteOn();
         osc.filterEnv.noteOn();
+        osc.frameEnv.noteOn();
+        osc.noise.setSeed (0x9e3779b9LL + note * 31 + static_cast<int> (&osc - oscs.data()));
         osc.filter.reset();
         // All unison voices start coherent, matching the reference engine.
         //
@@ -134,6 +140,11 @@ void Voice::noteOff()
     {
         osc.env.noteOff();
         osc.filterEnv.noteOff();
+        // The frame envelope is deliberately not released. It carries a timbre
+        // trajectory, not a loudness one, and releasing it would run the tone
+        // backwards through the frames while the note decays -- an instrument's
+        // tail does not un-brighten back to its attack. It holds at wherever the
+        // note left it.
     }
 }
 
@@ -153,15 +164,48 @@ void Voice::render (float* out, float* send, int numSamples)
         auto pitchSemis = 0.0f;
         auto ampMod = 0.0f;
         auto cutoffMod = 0.0f;
+
+        // Modulators first, because what they produce is an input to the LFO
+        // they point at. With two slots, "the other one" is unambiguous.
+        std::array<float, kNumLfo> rateScale {};
+        std::array<float, kNumLfo> depthScale {};
+        rateScale.fill (1.0f);
+        depthScale.fill (1.0f);
+
         for (size_t l = 0; l < lfos.size(); ++l)
         {
+            const auto dest = patch.lfos[l].dest;
+            if (dest != LfoDest::lfoRate && dest != LfoDest::lfoDepth)
+                continue;
+
+            // The next slot along, wrapping. With three of them a modulator is
+            // written immediately before the LFO it drives, which is also how
+            // it reads in the editor.
+            const auto target = (l + 1) % lfos.size();
             const auto value = lfos[l].nextSample();
-            switch (patch.lfos[l].dest)
+            // Rate scales multiplicatively so a depth of 1 spans half to double
+            // speed, which is the range a player's wobble actually covers.
+            if (dest == LfoDest::lfoRate)
+                rateScale[target] = std::pow (2.0f, value);
+            else
+                depthScale[target] = juce::jlimit (0.0f, 2.0f, 1.0f + value);
+        }
+
+        for (size_t l = 0; l < lfos.size(); ++l)
+        {
+            const auto dest = patch.lfos[l].dest;
+            if (dest == LfoDest::lfoRate || dest == LfoDest::lfoDepth)
+                continue;
+
+            const auto value = lfos[l].nextSample (rateScale[l], depthScale[l]);
+            switch (dest)
             {
                 case LfoDest::pitch:  pitchSemis += value * kLfoPitchSemitones; break;
                 case LfoDest::amp:    ampMod += value; break;
                 case LfoDest::cutoff: cutoffMod += value * kLfoCutoffOctaves; break;
-                case LfoDest::none:   break;
+                case LfoDest::none:
+                case LfoDest::lfoRate:
+                case LfoDest::lfoDepth: break;
             }
         }
 
@@ -185,6 +229,7 @@ void Voice::render (float* out, float* send, int numSamples)
                     osc.env.nextSample();
                 if (osc.useFilter)
                     osc.filterEnv.nextSample();
+                osc.frameEnv.nextSample();
                 continue;
             }
 
@@ -193,22 +238,77 @@ void Voice::render (float* out, float* send, int numSamples)
                              * std::pow (2.0, (spec.semitones + spec.cents / 100.0) / 12.0)
                              * pitchRatio;
 
-            const auto* table = tables->tableFor (spec.waveform, spec.pulseWidth, tuned);
-            // Both tables are band-limited for this note, so crossfading them
-            // cannot introduce anything above Nyquist.
-            const auto morph = juce::jlimit (0.0f, 1.0f, spec.waveMorph);
-            const auto* tableB = morph > 1.0e-6f
-                               ? tables->tableFor (spec.waveformB, spec.pulseWidth, tuned)
-                               : nullptr;
+            // Where in the table this sample sits. One frame is an ordinary
+            // analog oscillator and the position never leaves it; more, and
+            // the envelope walks the note through the frames, which is the one
+            // thing a fixed shape and a filter together cannot do.
+            const auto count = juce::jlimit (1, Oscillator::kMaxFrames, spec.numFrames);
+            const auto envValue = osc.frameEnv.nextSample();
+            const auto position = juce::jlimit (0.0f, 1.0f,
+                                                spec.framePosition
+                                                + spec.framePositionEnvAmount * envValue);
+            const auto scaled = position * static_cast<float> (count - 1);
+            const auto lower = juce::jlimit (0, juce::jmax (0, count - 2),
+                                             static_cast<int> (scaled));
+            const auto frameMorph = count > 1
+                                  ? juce::jlimit (0.0f, 1.0f, scaled - static_cast<float> (lower))
+                                  : 0.0f;
+
+            // A generated frame keeps the full Fourier series of its shape --
+            // that is what stops "saw" from meaning "the first sixteen
+            // harmonics of a saw" and losing its top end. A drawn frame is its
+            // own table. Every one of them is band-limited for this note, so
+            // crossfading them cannot introduce anything above Nyquist.
+            const auto* framesData = (frameTables != nullptr) ? &(*frameTables)[i] : nullptr;
+            const auto tableForFrame = [&] (int f) -> const float*
+            {
+                if (framesData != nullptr)
+                    if (const auto* custom = framesData->tableFor (f, tuned))
+                        return custom;
+                return nullptr;
+            };
+
+            const auto* customA = tableForFrame (lower);
+            const auto* customB = frameMorph > 1.0e-6f ? tableForFrame (lower + 1) : nullptr;
+
+            // The generated fallback, shared by however many frames are still
+            // undrawn: the oscillator's own waveform blend.
+            const auto shapeMorph = juce::jlimit (0.0f, 1.0f, spec.waveMorph);
+            const float* shapeA = nullptr;
+            const float* shapeB = nullptr;
+            if (customA == nullptr || (frameMorph > 1.0e-6f && customB == nullptr))
+            {
+                shapeA = tables->tableFor (spec.waveform, spec.pulseWidth, tuned);
+                if (shapeMorph > 1.0e-6f)
+                    shapeB = tables->tableFor (spec.waveformB, spec.pulseWidth, tuned);
+            }
+
+            // A noise generator has no phase and no table, so it short-circuits
+            // the whole frame path. Everything downstream -- envelope, filter,
+            // level, reverb send -- applies to it exactly as to any other
+            // oscillator, which is the entire point of making it a waveform.
+            const auto isNoise = spec.waveform == Waveform::noise
+                              && ! spec.frames[static_cast<size_t> (lower)].custom;
+
+            const auto frameSample = [&] (const float* custom, double ph)
+            {
+                if (custom != nullptr)
+                    return WaveTables::lookup (custom, ph);
+                auto value = WaveTables::lookup (shapeA, ph);
+                if (shapeB != nullptr)
+                    value += (WaveTables::lookup (shapeB, ph) - value) * shapeMorph;
+                return value;
+            };
 
             float acc = 0.0f;
             for (int v = 0; v < osc.numVoices; ++v)
             {
                 const auto idx = static_cast<size_t> (v);
                 const auto freq = tuned * osc.detuneRatio[idx];
-                auto sample = WaveTables::lookup (table, osc.phase[idx]);
-                if (tableB != nullptr)
-                    sample += (WaveTables::lookup (tableB, osc.phase[idx]) - sample) * morph;
+                auto sample = isNoise ? osc.noise.nextFloat() * 2.0f - 1.0f
+                                      : frameSample (customA, osc.phase[idx]);
+                if (! isNoise && frameMorph > 1.0e-6f)
+                    sample += (frameSample (customB, osc.phase[idx]) - sample) * frameMorph;
                 acc += sample;
                 osc.phase[idx] += freq / sampleRate;
                 if (osc.phase[idx] >= 1.0)
@@ -272,13 +372,14 @@ void Engine::prepare (double sr, int)
 {
     sampleRate = sr;
     tables.prepare (sr);
+    rebuildFrameTables();
     delay.prepare (sr);
     delay.setParameters (patch.delay);
     reverb.prepare (sr);
     reverb.setParameters (patch.reverb);
     for (auto& v : voices)
     {
-        v.prepare (sr, &tables);
+        v.prepare (sr, &tables, &frameTables);
         v.setPatch (patch);
         v.setMonitorMask (monitor);
     }
@@ -291,9 +392,26 @@ void Engine::setMonitorMask (const std::array<float, kNumOsc>& mask)
         v.setMonitorMask (mask);
 }
 
+void Engine::buildFrameTables (const Patch& p, double sampleRate, FrameTableSet& out)
+{
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i].build (p.oscs[i].frames, p.oscs[i].numFrames, sampleRate);
+}
+
+void Engine::adoptFrameTables (FrameTableSet&& built)
+{
+    frameTables = std::move (built);
+}
+
+void Engine::rebuildFrameTables()
+{
+    buildFrameTables (patch, sampleRate, frameTables);
+}
+
 void Engine::setPatch (const Patch& p)
 {
     patch = p;
+    rebuildFrameTables();
     delay.setParameters (p.delay);
     reverb.setParameters (p.reverb);
     for (auto& v : voices)
@@ -400,6 +518,7 @@ void Engine::renderOffline (juce::AudioBuffer<float>& out, double noteHz,
     const auto residualCents = (exactNote - note) * 100.0;
 
     auto tuned = patch;
+    rebuildFrameTables();
     for (auto& osc : tuned.oscs)
         osc.cents = static_cast<float> (juce::jlimit (-50.0, 50.0, osc.cents + residualCents));
 

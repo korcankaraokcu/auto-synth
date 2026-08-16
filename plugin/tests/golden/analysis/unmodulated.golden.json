@@ -3369,26 +3369,6 @@
    "unison_voices": 1,
    "unison_detune": 0.0,
    "detune_cents": 0.533011415505705
-  },
-  {
-   "f0": 1840.2555639249952,
-   "salience": 28.70800294876098,
-   "energy": 47.84667205810547,
-   "num_partials": 20,
-   "num_harmonics": 10,
-   "unison_voices": 3,
-   "unison_detune": 50.0,
-   "detune_cents": 28.346929092014747
-  },
-  {
-   "f0": 1967.3795922248971,
-   "salience": 25.05487954616546,
-   "energy": 40.39798355102539,
-   "num_partials": 17,
-   "num_harmonics": 9,
-   "unison_voices": 3,
-   "unison_detune": 50.0,
-   "detune_cents": 28.881357906047423
   }
  ],
  "gate": {
@@ -3396,11 +3376,11 @@
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.010666666552424,
+  "attack": 0.001000059535727,
   "decay": 0.004999999888241,
   "sustain": 0.976261913776398,
   "release": 0.004999999888241,
-  "curve": 0.0
+  "curve": 8.0
  },
  "waveform_fit": {
   "waveform": "saw",
@@ -3859,35 +3839,35 @@
     "enabled": true,
     "waveform": "saw",
     "semitones": 0,
-    "cents": 0.0,
+    "cents": 2.5965917303e-05,
     "level": 1.0,
     "unison_voices": 1,
     "unison_detune": 0.0
    },
    {
-    "enabled": true,
+    "enabled": false,
     "waveform": "saw",
-    "semitones": 24,
-    "cents": 50.0,
-    "level": 0.1962552580227534,
-    "unison_voices": 3,
-    "unison_detune": 50.0
+    "semitones": 0,
+    "cents": 0.0,
+    "level": 0.0,
+    "unison_voices": 1,
+    "unison_detune": 0.0
    },
    {
     "enabled": false,
-    "waveform": "pulse",
-    "semitones": 24,
-    "cents": 50.0,
+    "waveform": "saw",
+    "semitones": 0,
+    "cents": 0.0,
     "level": 0.0,
-    "unison_voices": 3,
-    "unison_detune": 50.0
+    "unison_voices": 1,
+    "unison_detune": 0.0
    }
   ],
-  "root_hz": 219.82548035865315,
-  "cutoff_hz": 16406.542801340525,
+  "root_hz": 220.00059509277344,
+  "cutoff_hz": 16406.8203125,
   "env_amount": 0.0,
-  "noise_level": 0.1576196102285914,
-  "master_level": 0.18891572701100737,
-  "active_oscs": 2
+  "noise_level": 0.0,
+  "master_level": 0.213215529918671,
+  "active_oscs": 1
  }
 }

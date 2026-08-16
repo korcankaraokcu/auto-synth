@@ -266,8 +266,60 @@ double AutoSynthProcessor::getTailLengthSeconds() const
 
 void AutoSynthProcessor::applyPatch (const Patch& patch)
 {
+    // The FFTs happen here, outside the lock, so what the audio thread is kept
+    // out of is a pointer swap rather than a millisecond of table building.
+    // `setPatch` still rebuilds if it has to -- it just finds nothing to do.
+    Engine::FrameTableSet staged;
+    Engine::buildFrameTables (patch, getSampleRate(), staged);
+
     const juce::ScopedLock lock (patchLock);
+    engine.adoptFrameTables (std::move (staged));
     engine.setPatch (patch);
+}
+
+namespace
+{
+// What a frame is worth before anyone draws on it.
+std::array<float, Oscillator::kFrameHarmonics> generatedProfile (const Oscillator& osc)
+{
+    const auto amps = WaveTables::blendedHarmonics (osc.waveform, osc.waveformB, osc.waveMorph,
+                                                    osc.pulseWidth, Oscillator::kFrameHarmonics);
+    std::array<float, Oscillator::kFrameHarmonics> out {};
+    for (size_t k = 0; k < out.size() && k < amps.size(); ++k)
+        out[k] = amps[k];
+    return out;
+}
+} // namespace
+
+void AutoSynthProcessor::setFrameHarmonic (int oscIndex, int frameIndex, int harmonic, float amount)
+{
+    if (! juce::isPositiveAndBelow (oscIndex, kNumOsc)
+        || ! juce::isPositiveAndBelow (frameIndex, Oscillator::kMaxFrames)
+        || ! juce::isPositiveAndBelow (harmonic, Oscillator::kFrameHarmonics))
+        return;
+
+    auto patch = getPatchSnapshot();
+    auto& osc = patch.oscs[static_cast<size_t> (oscIndex)];
+    auto& frame = osc.frames[static_cast<size_t> (frameIndex)];
+
+    // Seeded from the shape it was generated from, so the first drag moves one
+    // bar rather than replacing the sound with a single sine.
+    if (! frame.custom)
+    {
+        frame.custom = true;
+        frame.harmonics = generatedProfile (osc);
+    }
+
+    frame.harmonics[static_cast<size_t> (harmonic)] = juce::jlimit (0.0f, 1.0f, amount);
+    applyPatch (patch);
+    if (onPatchChanged != nullptr)
+        onPatchChanged();
+}
+
+Patch AutoSynthProcessor::getPatchSnapshot() const
+{
+    const juce::ScopedLock lock (patchLock);
+    return engine.getPatch();
 }
 
 void AutoSynthProcessor::pushPatchToParameters (const Patch& patch)

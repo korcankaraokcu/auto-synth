@@ -1,6 +1,8 @@
 #include "fit/EnvelopeFit.h"
 
 #include "dsp/Envelope.h"
+
+#include "dsp/Envelope.h"
 #include "fit/NdFilters.h"
 
 #include <algorithm>
@@ -9,6 +11,12 @@
 
 namespace autosynth
 {
+
+// How much the amplitude contour is smoothed before flatness, full level and
+// the decay are judged on it -- roughly one vibrato period. Named because three
+// separate measurements depend on being smoothed by the *same* amount, and a
+// decay cannot be shorter than what this can resolve.
+constexpr double kContourSmoothSeconds = 0.25;
 namespace
 {
 const float kCurveCandidates[] = { 0.0f, 0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f };
@@ -154,6 +162,57 @@ EnvelopeFit::Gate EnvelopeFit::detectGate (const std::vector<float>& rms,
     return gate;
 }
 
+float EnvelopeFit::fitAttackCurve (const std::vector<float>& observed,
+                                   const std::vector<float>& times, const Adsr& env,
+                                   double gateTime, bool amplitudeDomain)
+{
+    if (observed.size() < 4 || env.attack <= 1.0e-4f)
+        return 0.0f;
+
+    const auto dt = meanDiff (times);
+    const auto peak = *std::max_element (observed.begin(), observed.end());
+    if (peak <= 1.0e-9f)
+        return 0.0f;
+
+    // Only the rise, and compared in decibels, because that is where the fault
+    // lives. A linear ramp's error is concentrated in the first third of the
+    // attack, where it is 10 to 16 dB below the target but only a few percent
+    // away in amplitude -- so an amplitude comparison cannot see it, and picks
+    // linear every time.
+    const auto last = juce::jlimit<size_t> (2, observed.size() - 1,
+                                            static_cast<size_t> (env.attack / juce::jmax (dt, 1.0e-9)));
+
+    auto best = std::numeric_limits<double>::infinity();
+    auto bestCurve = 0.0f;
+    for (auto candidate : kCurveCandidates)
+    {
+        auto trial = env;
+        trial.attackCurve = candidate;
+
+        double error = 0.0;
+        for (size_t i = 0; i <= last; ++i)
+        {
+            const auto value = Envelope::evaluate (trial, static_cast<double> (i) * dt, gateTime);
+            if (amplitudeDomain)
+            {
+                const auto modelDb = 20.0 * std::log10 (std::max (static_cast<double> (value), 1.0e-4));
+                const auto targetDb = 20.0 * std::log10 (std::max (observed[i] / peak, 1.0e-4f));
+                error += std::abs (modelDb - targetDb);
+            }
+            else
+            {
+                error += std::abs (static_cast<double> (value) - observed[i] / peak);
+            }
+        }
+        if (error < best)
+        {
+            best = error;
+            bestCurve = candidate;
+        }
+    }
+    return bestCurve;
+}
+
 float EnvelopeFit::fitCurve (const std::vector<float>& observed, const std::vector<float>& times,
                              const Adsr& env, double gateTime)
 {
@@ -196,8 +255,74 @@ float EnvelopeFit::fitCurve (const std::vector<float>& observed, const std::vect
     return bestCurve;
 }
 
+float EnvelopeFit::attackMeasuring (Adsr env, double gateTime, float measured,
+                                    double frameRate, float floor)
+{
+    const auto span = juce::jmax (gateTime, static_cast<double> (measured) * 2.0 + 0.5);
+    const auto count = juce::jlimit (16, 4000, static_cast<int> (std::lround (span * frameRate)));
+
+    std::vector<float> times (static_cast<size_t> (count));
+    for (int i = 0; i < count; ++i)
+        times[static_cast<size_t> (i)] = static_cast<float> (i / frameRate);
+
+    std::vector<float> rendered (times.size());
+    const auto crossingFor = [&] (float attack)
+    {
+        env.attack = attack;
+        for (size_t i = 0; i < times.size(); ++i)
+            rendered[i] = Envelope::evaluate (env, times[i], gateTime);
+        return attackSeconds (rendered, times, floor);
+    };
+
+    auto lo = 0.001f, hi = 2.0f;
+    for (int i = 0; i < 24; ++i)
+    {
+        const auto mid = 0.5f * (lo + hi);
+        (crossingFor (mid) < measured ? lo : hi) = mid;
+    }
+    return 0.5f * (lo + hi);
+}
+
+float EnvelopeFit::attackSeconds (const std::vector<float>& rawCurve,
+                                  const std::vector<float>& times, float floor)
+{
+    if (rawCurve.size() < 4 || times.size() < 4)
+        return 0.0f;
+
+    const auto peak = *std::max_element (rawCurve.begin(), rawCurve.end());
+    if (peak <= 1.0e-9f)
+        return 0.0f;
+
+    std::vector<float> curve (rawCurve.size());
+    for (size_t i = 0; i < rawCurve.size(); ++i)
+        curve[i] = rawCurve[i] / peak;
+
+    // "Full level" judged on a smoothed copy, so a vibrato crest a second into
+    // the note cannot stand in for the level the note actually holds; the
+    // crossing itself is still found on the unsmoothed curve, so a genuinely
+    // fast attack keeps its timing.
+    auto contour = curve;
+    const auto span = std::max (1, static_cast<int> (std::lround (kContourSmoothSeconds / meanDiff (times))));
+    if (span > 1 && static_cast<int> (contour.size()) > span)
+        contour = nd::uniformFilter1d (contour, span);
+    const auto fullLevel = *std::max_element (contour.begin(), contour.end());
+
+    const auto firstAbove = [&curve] (float level)
+    {
+        for (size_t i = 0; i < curve.size(); ++i)
+            if (curve[i] > level)
+                return static_cast<int> (i);
+        return 0;
+    };
+
+    const auto onsetI = firstAbove (floor);
+    const auto peakI = firstAbove (0.9f * fullLevel);
+    return std::max (times[static_cast<size_t> (peakI)] - times[static_cast<size_t> (onsetI)],
+                     1.0e-3f);
+}
+
 Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector<float>& times,
-                           double gateTime, float floor, bool oneShot)
+                           double gateTime, float floor, bool oneShot, bool amplitudeDomain)
 {
     if (rawCurve.size() < 4 || times.size() < 4)
         return { 0.01f, 0.1f, 0.5f, 0.1f, 0.0f };
@@ -225,7 +350,7 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     // the unsmoothed curve, so a genuinely fast attack keeps its timing.
     const auto dtForPeak = meanDiff (times);
     auto contour = curve;
-    const auto contourSpan = std::max (1, static_cast<int> (std::lround (0.25 / dtForPeak)));
+    const auto contourSpan = std::max (1, static_cast<int> (std::lround (kContourSmoothSeconds / dtForPeak)));
     if (contourSpan > 1 && static_cast<int> (contour.size()) > contourSpan)
         contour = nd::uniformFilter1d (contour, contourSpan);
     const auto fullLevel = *std::max_element (contour.begin(), contour.end());
@@ -265,6 +390,9 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
         env.sustain = 0.0f;
         env.release = juce::jlimit (0.005f, 4.0f, decay);
         env.curve = fitCurve (curve, times, env, times.back());
+        env.attackCurve = fitAttackCurve (curve, times, env, times.back(), amplitudeDomain);
+        env.attack = juce::jlimit (0.001f, 2.0f,
+                                   attackMeasuring (env, times.back(), env.attack));
         return env;
     }
 
@@ -297,13 +425,27 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     }
     sustain = juce::jlimit (0.0f, 1.0f, sustain);
 
-    // Decay: peak -> within 10% of the sustain level.
+    // Decay: peak -> within 10% of the sustain level, measured on the smoothed
+    // contour rather than the raw one.
+    //
+    // On the raw curve the first vibrato trough after the attack peak crosses
+    // the target almost immediately, and the decay comes back as one or two
+    // frames. That is not a fast decay, it is a crossing on a wobbling curve --
+    // and the envelope it produces has a hard corner in it: a violin was fitted
+    // with a 0.60 s attack to full level followed by a 7 ms collapse to 46%,
+    // which is a 6.8 dB step no bowed note ever makes and which listeners
+    // described as the sound "vacuuming back" half a second in.
+    //
+    // The attack keeps its raw-curve crossing, because a genuinely fast attack
+    // must not be smoothed away. Only the decay is judged on the contour, which
+    // is the same copy `fullLevel` is taken from.
+    //
     const auto target = sustain + 0.1f * (1.0f - sustain);
     auto decay = std::max (times[static_cast<size_t> (gateI - 1)]
                                - times[static_cast<size_t> (peakI)], 5.0e-3f);
     for (int i = peakI; i < gateI; ++i)
     {
-        if (held[static_cast<size_t> (i)] <= target)
+        if (contour[static_cast<size_t> (i)] <= target)
         {
             decay = std::max (times[static_cast<size_t> (i)]
                                   - times[static_cast<size_t> (peakI)], 5.0e-3f);
@@ -333,6 +475,8 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     env.sustain = sustain;
     env.release = juce::jlimit (0.005f, 4.0f, release);
     env.curve = fitCurve (curve, times, env, gateTime);
+    env.attackCurve = fitAttackCurve (curve, times, env, gateTime, amplitudeDomain);
+    env.attack = juce::jlimit (0.001f, 2.0f, attackMeasuring (env, gateTime, env.attack));
     return env;
 }
 

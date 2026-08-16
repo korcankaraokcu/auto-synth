@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FrameView.h"
 #include "ParamKnob.h"
 #include "PluginProcessor.h"
 
@@ -21,7 +22,7 @@ public:
     // with it by hand.
     static constexpr int kCaptionHeight = 11;
     static constexpr int kRowHeight = 70;
-    static constexpr int kPreferredHeight = 8 + 18 + 3 * kRowHeight;
+    static constexpr int kPreferredHeight = 8 + 18 + 4 * kRowHeight;
 
     OscillatorStrip (AutoSynthProcessor& processorToUse, int oscIndex)
         : processor (processorToUse), index (oscIndex)
@@ -125,10 +126,56 @@ public:
         addKnob (filterS, filterSLabel, prefix + "filter_env_sustain", "f.S",
                  filterSAttachment);
 
+        // Wavetable. There is no on/off, because there is nothing to switch
+        // between: one frame, undrawn, *is* the wave blend above. Adding frames
+        // and dragging bars is how it stops being one.
+        addAndMakeVisible (frameView);
+        frameView.onHarmonicDragged = [this] (int harmonic, float amount)
+        {
+            processor.setFrameHarmonic (index, editFrameIndex(), harmonic, amount);
+        };
+
+        addKnob (frameCount, frameCountLabel, prefix + "num_frames", "frames",
+                 frameCountAttachment);
+        frameCount.onValueChange = [this] { refresh(); };
+
+        // Which frame the bars edit. Not a parameter: it is a view, like solo
+        // and mute, and a saved patch must not remember which frame someone
+        // happened to have open.
+        editFrame.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+        editFrame.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 44, 14);
+        editFrame.setRange (1.0, Oscillator::kMaxFrames, 1.0);
+        editFrame.setValue (1.0, juce::dontSendNotification);
+        editFrame.onValueChange = [this] { refresh(); };
+        addAndMakeVisible (editFrame);
+        editFrameLabel.setText ("edit", juce::dontSendNotification);
+        editFrameLabel.setJustificationType (juce::Justification::centred);
+        editFrameLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
+        editFrameLabel.setFont (juce::FontOptions (10.0f));
+        addAndMakeVisible (editFrameLabel);
+
+        addKnob (framePos, framePosLabel, prefix + "frame_position", "pos",
+                 framePosAttachment);
+        addKnob (frameEnvAmt, frameEnvAmtLabel, prefix + "frame_position_env_amount", "env amt",
+                 frameEnvAmtAttachment);
+        addKnob (frameA, frameALabel, prefix + "frame_position_env_attack", "sweep",
+                 frameAAttachment);
+
+        refresh();
         updateDimming();
     }
 
-    void refresh() { updateDimming(); }
+    void refresh()
+    {
+        const auto patch = processor.getPatchSnapshot();
+        const auto& osc = patch.oscs[static_cast<size_t> (index)];
+        editFrame.setRange (1.0, juce::jmax (1, osc.numFrames), 1.0);
+        frameView.setFrames (osc.frames, osc.numFrames, editFrameIndex(), osc.framePosition,
+                             WaveTables::blendedHarmonics (osc.waveform, osc.waveformB,
+                                                           osc.waveMorph, osc.pulseWidth,
+                                                           Oscillator::kFrameHarmonics));
+        updateDimming();
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -225,6 +272,15 @@ public:
         layoutKnob (filterRow, filterEnvAmt, filterEnvAmtLabel);
         layoutKnob (filterRow, filterD, filterDLabel);
         layoutKnob (filterRow, filterS, filterSLabel);
+
+        auto tableRow = area.removeFromTop (kRowHeight);
+        beginGroup (tableRow, "wavetable", false);
+        layoutKnob (tableRow, frameCount, frameCountLabel);
+        layoutKnob (tableRow, editFrame, editFrameLabel);
+        layoutKnob (tableRow, framePos, framePosLabel);
+        layoutKnob (tableRow, frameEnvAmt, frameEnvAmtLabel);
+        layoutKnob (tableRow, frameA, frameALabel);
+        frameView.setBounds (tableRow.reduced (6, 4));
     }
 
 private:
@@ -284,6 +340,13 @@ private:
 
     juce::Label title;
     juce::ToggleButton enabled, ownEnv, ownFilter;
+    FrameView frameView;
+
+    int editFrameIndex() const
+    {
+        return juce::jlimit (0, Oscillator::kMaxFrames - 1,
+                             static_cast<int> (editFrame.getValue()) - 1);
+    }
     juce::TextButton soloButton, muteButton;
     juce::ComboBox waveform, waveformB, filterType;
     struct Group
@@ -296,12 +359,16 @@ private:
 
     ParamKnob semitones, cents, level, unison, detune, morph, reverbSend,
                  envA, envD, envS, envR,
-                 filterCutoff, filterRes, filterEnvAmt, filterD, filterS;
+                 filterCutoff, filterRes, filterEnvAmt, filterD, filterS,
+                 framePos, frameEnvAmt, frameA, frameCount;
+    ParamKnob editFrame;
     juce::Label semitonesLabel, centsLabel, levelLabel, unisonLabel, detuneLabel, morphLabel,
                 reverbSendLabel,
                 envALabel, envDLabel, envSLabel, envRLabel,
                 filterCutoffLabel, filterResLabel, filterEnvAmtLabel,
-                filterDLabel, filterSLabel;
+                filterDLabel, filterSLabel,
+                framePosLabel, frameEnvAmtLabel, frameALabel,
+                frameCountLabel, editFrameLabel;
 
     std::unique_ptr<ButtonAttachment> enabledAttachment, ownEnvAttachment, ownFilterAttachment;
     std::unique_ptr<ComboAttachment> waveformAttachment, waveformBAttachment,
@@ -312,7 +379,9 @@ private:
                                       envAAttachment, envDAttachment, envSAttachment,
                                       envRAttachment, filterCutoffAttachment,
                                       filterResAttachment, filterEnvAmtAttachment,
-                                      filterDAttachment, filterSAttachment;
+                                      filterDAttachment, filterSAttachment,
+                                      framePosAttachment, frameEnvAmtAttachment,
+                                      frameAAttachment, frameCountAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscillatorStrip)
 };

@@ -93,6 +93,19 @@ public:
     };
     Spectra getSpectra() const;
 
+    // A copy of what the engine is playing. The editor needs the wavetable
+    // frames to draw them, and they are the one part of a patch that is not a
+    // parameter -- there is nothing in the value tree to read them from.
+    Patch getPatchSnapshot() const;
+
+    // Edits one harmonic of one frame, converting that frame from generated to
+    // drawn on the first touch. Not a parameter, so it does not go through the
+    // value tree: sixteen amplitudes times sixteen frames times three
+    // oscillators is not something to hand a host, and a table rebuild is an
+    // FFT that must not land on the audio thread. This runs on the message
+    // thread and hands the finished tables to the engine under the patch lock.
+    void setFrameHarmonic (int oscIndex, int frameIndex, int harmonic, float amount);
+
     std::function<void()> onPatchChanged;
 
 private:
@@ -133,7 +146,7 @@ private:
     std::atomic<bool> syncing { false };
 
     Engine engine;
-    juce::CriticalSection patchLock;
+    mutable juce::CriticalSection patchLock;
     std::atomic<bool> analysing { false };
     juce::CriticalSection statusLock;
     juce::String status { "no patch loaded" };

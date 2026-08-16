@@ -94,7 +94,8 @@ double relativeDiff (double a, double b)
 // The fixtures store enums by name, not by index -- deliberately, so that
 // inserting a waveform cannot silently rewrite the meaning of every file
 // already on disk. These turn a stored name back into its enum value.
-const std::array<const char*, 5> kWaveformNames { "sine", "triangle", "saw", "square", "pulse" };
+const std::array<const char*, 6> kWaveformNames { "sine", "triangle", "saw", "square",
+                                                  "pulse", "noise" };
 const std::array<const char*, 4> kLfoDestNames { "none", "pitch", "amp", "cutoff" };
 
 template <size_t N>

@@ -19,6 +19,7 @@
 #include "fit/Refine.h"
 #include "fit/WaveformFit.h"
 #include "analysis/Partials.h"
+#include "analysis/Roles.h"
 #include "analysis/Stft.h"
 #include "analysis/Yin.h"
 
@@ -157,6 +158,12 @@ int main (int argc, char* argv[])
     trackOptions.hop = hop;
     const auto partialSet = autosynth::PartialTracker::track (samples, numSamples,
                                                               sampleRate, trackOptions);
+    auto* rolesObj = new juce::DynamicObject();
+    rolesObj->setProperty ("noise_share",
+                           autosynth::Roles::noiseShare (samples, numSamples, sampleRate, f0,
+                                                         fftSize, hop));
+    const juce::var rolesVar (rolesObj);
+
     const auto groups = autosynth::Grouping::group (partialSet, 3);
 
     juce::Array<juce::var> partialArray;
@@ -311,6 +318,7 @@ int main (int argc, char* argv[])
                           out.getFullPathName().toRawUTF8());
     }
 
+
     const auto trajectories = autosynth::Modulation::extract (samples, numSamples, sampleRate, hop);
     const auto lfo = autosynth::Modulation::best (trajectories);
     auto* lfoObj = new juce::DynamicObject();
@@ -355,6 +363,7 @@ int main (int argc, char* argv[])
     fittedObj->setProperty ("active_oscs", fitted.activeOscCount());
 
     auto* root = new juce::DynamicObject();
+    root->setProperty ("roles", rolesVar);
     root->setProperty ("fitted", juce::var (fittedObj));
     root->setProperty ("refine", refineVar);
     root->setProperty ("filter_fit", filterVar);

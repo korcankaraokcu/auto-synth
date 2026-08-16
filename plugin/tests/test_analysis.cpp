@@ -9,6 +9,7 @@
 #include "Helpers.h"
 
 #include "analysis/Grouping.h"
+#include "analysis/Roles.h"
 #include "analysis/Partials.h"
 #include "analysis/Yin.h"
 
@@ -252,4 +253,41 @@ TEST_CASE ("groups are ordered by salience", "[analysis]")
         trackOf (sawSum ({ { 220.0, 1.0 }, { 330.0, 0.3 } })), 3);
     for (size_t i = 1; i < groups.size(); ++i)
         CHECK (groups[i - 1].salience >= groups[i].salience);
+}
+
+// Noise measured between the harmonics, not from the tracker.
+//
+// The tracker-based version of this reported a violin at 72% non-harmonic
+// energy and a clarinet at 0.9% when given a 2048-point window, and 0.03% for
+// both at the 1024 the fitter actually uses. A measurement that moves three
+// orders of magnitude with an analysis window is not measuring the sound, which
+// is why this one works on the spectrum instead.
+TEST_CASE ("noise share separates a tone from a tone plus hiss", "[analysis]")
+{
+    constexpr double f0 = 220.0;
+    const auto samples = static_cast<int> (kSampleRate);
+
+    std::vector<float> clean (static_cast<size_t> (samples), 0.0f);
+    for (int i = 0; i < samples; ++i)
+    {
+        auto v = 0.0;
+        for (int k = 1; k <= 8; ++k)
+            v += std::sin (2.0 * juce::MathConstants<double>::pi * k * f0 * i / kSampleRate) / k;
+        clean[static_cast<size_t> (i)] = static_cast<float> (v * 0.3);
+    }
+
+    juce::Random rng (1234);
+    auto hissy = clean;
+    for (auto& v : hissy)
+        v += (rng.nextFloat() * 2.0f - 1.0f) * 0.05f;
+
+    const auto quiet = autosynth::Roles::noiseShare (clean.data(), samples, kSampleRate, f0);
+    const auto loud = autosynth::Roles::noiseShare (hissy.data(), samples, kSampleRate, f0);
+
+    INFO ("clean " << quiet << "  hissy " << loud);
+    CHECK (quiet < 0.2);
+    CHECK (loud > quiet * 2.0);
+
+    // No pitch to measure against is not an excuse to invent a number.
+    CHECK (autosynth::Roles::noiseShare (clean.data(), samples, kSampleRate, 0.0) == 0.0);
 }

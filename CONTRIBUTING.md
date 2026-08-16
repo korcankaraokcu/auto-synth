@@ -135,9 +135,9 @@ nothing can bring it back. Analysis proposes; refinement can only prune.
 plugin/
   src/ir/          Patch.h/.cpp — the contract, plus JSON read and write
   src/dsp/         Tables, Envelope, Svf, Delay, Reverb, Voice — the engine
-  src/analysis/    Stft, Yin, Partials, Grouping
+  src/analysis/    Stft, Yin, Partials, Grouping, Roles
   src/fit/         WaveformFit, EnvelopeFit, FilterFit, Modulation, EffectsFit,
-                   PartialFit, Nnls, CmaEs, Refine
+                   PartialFit, Nnls, Nmf, CmaEs, Refine
   src/eval/        Recovery — the ground-truth harness
   src/Parameters*  host-automatable parameters
   src/Plugin*      processor and editor
@@ -459,6 +459,542 @@ and R² then condemns a set of rates that are mostly right. Counting inliers
 around a *median* slope is unbothered by a minority of bad harmonics, which is
 the normal case — high harmonics are weak and their envelopes noisy.
 
+### Noise as a waveform
+
+Two attempts to give the noise bed an envelope failed by bolting one on beside
+it: a separate ADSR competed with the amplitude envelope, both real samples got
+worse, and the whole thing was reverted. `Waveform::noise` is the same idea with
+the plumbing already built. Selecting it makes an oscillator a noise generator,
+and it inherits everything an oscillator has — its own level, envelope, filter,
+reverb send — from machinery that is already fitted.
+
+The immediate payoff is the branch for unpitched material. It used to set a bare
+global noise level and switch the filter off, which describes a cymbal, a snare
+and a breath identically: flat, static, and lasting exactly as long as the
+amplitude envelope says. As an oscillator it gets a measured attack and a
+measured brightness instead of neither. The `noise` fixture now fits as one noise
+oscillator rather than as zero oscillators plus a level.
+
+Three details that are not obvious:
+
+- **The waveform matcher must not be able to choose it.** Noise's harmonic
+  profile is flat, and a flat profile is close enough to a badly-measured one
+  that the matcher would reach for it whenever the analysis was struggling —
+  describing a pitched note as noise, which is the least useful thing a patch can
+  say. It is excluded from the candidate list; only the branch that has already
+  decided a sound is unpitched selects it.
+- **It still needs a harmonic profile.** The fitter reads profiles through
+  `harmonicAmplitudes`, so a case that fell through the switch would silently
+  return silence rather than an error. Flat is both the honest answer and the
+  safe one.
+- **Silence is not unpitched material.** A noise oscillator at any level is a
+  worse description of an empty file than an empty patch, so a peak below a
+  thousandth takes the old path and proposes nothing.
+
+Two noise oscillators are two generators, seeded separately. Sharing one would
+make them the same signal at double level, which is a chorus of one —
+`test_engine.cpp` checks they add in power rather than in amplitude.
+
+### The noise level is measured, not solved
+
+A listener reported the violin had lost its background noise, and the cause was
+a parameter three steps away from it. Noise is one column in a least-squares
+solve against every oscillator, so *anything* that changes how the oscillators
+render changes how much noise is left for it: fitting an attack curve — which
+has nothing to do with noise — dropped a violin from 0.09 to 0.015 and audibly
+stripped the bow off it.
+
+`calibrateNoise` closes the loop instead: render, measure the energy between the
+harmonics, scale, repeat. Two or three passes, against the same quantity
+`autosynth_diff` prints as noisiness, so the number is stable under changes that
+have nothing to do with it.
+
+Two guards, both of which cost measurements to find:
+
+- **Refinement may sharpen it but not replace it.** Left at its full range,
+  CMA-ES undid the calibration immediately — broadband energy lowers a
+  log-spectral error wherever the harmonic fit is imperfect, and the optimiser
+  always finds that trade. Removing it from the search entirely was tried and
+  costs *more* than it saves: CMA-ES loses a dimension and lands elsewhere,
+  putting the harness's brightness error up by a third on patches whose noise
+  was already zero. Half to double, like the measured attack before it.
+- **A margin, because this measurement cannot tell hiss from smearing.** A
+  vibrato'd oscillator spreads energy between its own harmonics, so a perfectly
+  clean synthetic target still measures inter-harmonic energy, and matching that
+  number means adding hiss to imitate a wobble.
+
+The trade is real and is recorded rather than summarised away. Counting reached
+its best figure, **75.0%**, and invented noise on noise-free targets fell from
+0.030 to 0.015, audible in seven of twenty-four rather than twelve. Against that,
+spectral distance went from 0.576 to 0.668 and brightness from 0.286 to 0.396 —
+on a metric that has repeatedly been shown to *prefer* hiss, since filling empty
+bins lowers a log-spectral error. The violin's noise came back, which is what the
+change was for.
+
+### Wander: measuring how mechanical an LFO is
+
+A listener kept reporting more vibrato in the fits than in the recordings, while
+every metric said the fits wobbled *less*. Both were true. What separates them is
+regularity, and it is now measured: `Modulation::detectWander` reads the wobble's
+period cycle by cycle and reports how far that period drifts, in octaves.
+
+| violin | target | fit |
+|---|---|---|
+| pitch LFO period drift | 0.68 octaves over 15 cycles | **0.03** over 14 |
+| amp LFO period drift | 0.81 octaves over 22 cycles | **0.08** over 10 |
+
+A player's wobble period wanders by most of an octave. Ours is a metronome, by a
+factor of ten to twenty. `autosynth_diff` reports it next to every detected
+modulation, and the measurement is only trustworthy where the modulation is
+strong {d} on the clarinet, whose modulation is weak, the same estimator reads
+0.4 to 0.8 octaves on a signal we know to be a pure sine, which is noise.
+
+The engine can now reproduce it: `LfoDest::lfoRate` and `lfoDepth` point an LFO
+at the other slot, which is how Vital's matrix does it. Rate modulation warps
+*time* rather than the rate, because the phase here is a closed form of elapsed
+time and changing the rate directly would jump the phase every time the
+modulator moved; at a scale of one it is arithmetically identical to what it was,
+so nothing unmodulated changes by a bit.
+
+**What the fitter can and cannot do with it.** A modulator only takes a slot
+nobody else wanted. With two slots it otherwise costs a whole modulation, and
+losing a violin's tremolo to smear its vibrato is not obviously a trade worth
+making, so it is not made. Neither real sample has a spare slot, so neither gets
+one.
+
+A third slot was tried and reverted, and the reason is worth keeping. The
+recovery harness randomises every continuous parameter, so a third LFO changes
+how many random draws a target consumes and therefore *which targets get
+generated*: the control distance moved from 2.28 to 2.46 on patches that were
+supposed to be unchanged, which silently invalidates every number this project
+has recorded. Widening the IR is not free even when nothing uses the new width.
+
+### The attack gets its own curve
+
+The third attempt at the same problem, and the one that worked.
+
+A linear attack is a straight line in *amplitude*, which is a very quiet first
+third: with the envelope reaching nine tenths at exactly the right moment, a
+violin fit was still 16 dB below its target at note-on and converged only by
+0.35 s. The note emerged from silence rather than starting.
+
+Sharing the decay's `curve` was tried first and made both samples worse, because
+one number cannot shape an attack, a decay and a release at once. `attackCurve`
+is a separate field, defaulting to linear so nothing already written moves.
+
+**And the fitting criterion mattered more than the parameter.** Fitted by
+amplitude error over the rise, it chose linear every time {d} a linear ramp's
+error is concentrated where it is 10 to 16 dB down but only a few percent away
+in amplitude, so an amplitude comparison cannot see the fault it is looking for.
+In decibels it picks a real curve, and the order matters too: the curve is fitted
+*before* the attack length is solved from the measured crossing, because the
+crossing depends on the curve.
+
+| violin onset, dB below target | before | after |
+|---|---|---|
+| at 0.09 s | 9.3 | **6.3** |
+| converged by | 0.35 s | **0.11 s** |
+
+**But only for amplitude contours.** `fitAdsr` also fits the *filter* envelope,
+whose input is a cutoff trajectory measured in octaves — already a logarithm.
+Fitting its attack curve in decibels takes the logarithm twice and bends it far
+too hard: a clarinet's filter came back with an attack curve of 2.0, opening most
+of two octaves in the first fraction of its attack, and a listener heard a burst
+of noise at the start of the note that then dissolved.
+
+That one is worth dwelling on, because every measurement available said the fit
+was *fine*. Its inter-harmonic noise was lower than the target's at every point
+in the note (0.035 to 0.050 against 0.055 to 0.065), so `autosynth_diff`
+reported "cleaner" and nothing else. What it did show, once read in
+quarter-second windows, was brightness overshooting from 0.3 s onward — 1052 Hz
+against the recording's 861, growing to 1189 against 917. An over-opened filter
+on a reedy spectrum reads as hiss, and a noisiness metric that counts energy
+*between* harmonics cannot see it, because the energy is still on them.
+Isolating it took three rounds of A/B renders and a listener: reverb off, frames
+collapsed, envelope flattened, and finally the filter envelope removed, which was
+the one that did it.
+
+Fitted in its own domain the same clarinet gets an attack curve of 0.50, the
+violin 0.00, and the violin's overall brightness lands at 3120 Hz against a
+target of 3118.
+
+The harness agrees, which the shared-curve version never managed: spectral
+distance 0.582 to 0.576, loudness envelope 4.23 to 4.19 dB, counting unchanged
+at 70.8%.
+
+### Rank within a group, and the four guards it needed
+
+Grouping asks which partials share a fundamental and stops there. Two sources an
+octave apart share every harmonic index the lower one has, so they arrive as one
+group and the count comes back one short — which was every remaining
+under-count on the harness.
+
+Inside a group they are still separate *components*: one oscillator makes a
+rank-one matrix, a fixed spectral profile times one envelope, and two make it
+rank two whatever their interval. `nmf::selectRank` reads that rank per group.
+On synthetic matrices of known rank it is exact, including the octave pair and
+including the case that must *not* split — two spectra sharing one envelope,
+which really are one oscillator with a different waveform.
+
+On real material it was a disaster, four times over, and each guard is a
+separate lesson.
+
+**The filter has to come out first.** A filter sweep tilts the spectrum over
+time, which is genuinely not rank one, so a single oscillator behind a moving
+filter factorises as two. The rank is now read from the *deconvolved* matrix,
+the same ordering the waveform fit already uses. The components are then applied
+as a soft mask to the original matrix rather than as a reconstruction of it, so
+everything downstream still sees measured data and the filter is divided out
+once, where it always was.
+
+**A ratio is not a parsimony rule.** Taken greedily, rank two split eight of
+twelve *single*-oscillator targets in two, because a real oscillator's harmonics
+are never exactly rank one and a second component always buys something.
+
+**Nor is one absolute threshold.** Two were tried and each fails a case the
+other handles. "Rank one must be visibly bad" refuses a *perfectly clean*
+two-source matrix whenever rank one happens to score tolerably — the synthetic
+octave pair reconstructs to 2e-7 at rank two and was rejected because rank one
+reached 0.20. "Rank two must explain the matrix outright" refuses two real
+instruments, where neither rank reconstructs cleanly. Either is now sufficient,
+because they are evidence of different kinds.
+
+**And a split has to be into different fundamentals.** Two components sharing one
+fundamental are not two oscillators, they are one oscillator whose timbre moves
+— which already has a model, the wavetable frames, describing it in sixteen
+numbers rather than a whole second oscillator. Without this the two models
+compete for the same evidence and the expensive one wins by default: a clarinet
+with 4.3 dB of measured drift came back as two oscillators at the same pitch and
+a violin as three. Same discipline as the release and the reverb.
+
+A component's own fundamental comes from *which* harmonics it owns, by greatest
+common divisor — energy only on even harmonics means it is really at 2*f0. It
+has to be "owns" rather than "has energy at", because the factorisation leaks
+worst onto the low harmonics where the other component is loudest: a source a
+twelfth up came back with 1.00 on harmonic three and 0.13 on harmonic one, and
+gcd({1, 3}) is 1, so a correct split was thrown away.
+
+| | before | after |
+|---|---|---|
+| counting exact | 66.7% | **70.8%** |
+| truth 3 recovered | never | once |
+| spectral | 0.566 | 0.582 |
+| clarinet, violin | 1 osc each | 1 osc each |
+
+The octave case the whole thing was built for — `7 and 19` — is still
+missed, and the honest reading is that this fixed the *general* machinery
+without yet fixing that instance. What it did fix is the three-source targets,
+which had never once been recovered.
+
+### Counting: two bugs the confusion matrix found
+
+"50% exact" says nothing useful. Splitting it by which way the miss went, and
+printing the interval and level of every source in every trial that missed,
+turned one number into a to-do list — and it named two separate bugs.
+
+```
+  truth \ fitted    1    2    3            truth \ fitted    1    2    3
+              1    8    2    2                          1   11    1    0
+              2    6    4    0                          2    6    4    0
+              3    1    1    0                          3    1    1    0
+        before: 50.0%                              after: 62.5%
+```
+
+**Cents are relative and harmonic slots are not.** A partial was claimed for
+harmonic *k* if it sat within 50 cents of *k·f₀*. But the gap between harmonic
+*k* and *k+1* is about 1731/*k* cents, so that window is a fifth of the gap at
+harmonic 2 and *wider than the whole gap* by harmonic 35. From roughly the
+seventeenth harmonic upward the windows of adjacent slots overlap and every
+partial in that region matches some harmonic of whatever fundamental is being
+tested. The first group therefore claimed the entire top of the spectrum
+regardless of which source the partials came from, the second source was
+stripped of its upper partials, dropped under the energy floor, and no second
+group formed. Capping the window at a fraction of the slot spacing took the
+under-counts from eight to five and, independently, improved the audio
+distances.
+
+**A source has a bottom.** The tighter window leaves ambiguous high partials in
+the pool, and on a heavily vibrato'd note there are many of them — its upper
+partials wander further than a harmonic slot is wide. Left alone they assemble
+into a group with an invented fundamental and no first or second harmonic under
+it. Requiring every group after the first to carry at least 5% of its energy in
+harmonics 1 and 2 took the over-counts from four to one.
+
+The two are independent, and both are worth having:
+
+| | exact | spectral | centroid (oct) |
+|---|---|---|---|
+| before | 50.0% | 0.623 | 0.285 |
+| slot-spacing window only | 54.2% | 0.581 | 0.267 |
+| low-harmonic rule only | 58.3% | 0.624 | 0.314 |
+| both | 62.5% | 0.598 | 0.282 |
+
+Nine golden analysis fixtures moved and all nine moved the same way: a
+*single-source* signal that had been grouped as two or three sources, and in
+five cases fitted as two oscillators, is now grouped and fitted as one. The
+fixtures had been pinning the reference's over-counting. `two_sources_fifth` and
+`two_sources_octave` did **not** move — the change suppresses invented sources
+without losing real ones, which is the whole claim, and those two fixtures are
+what makes it checkable.
+
+What is left is under-counting, six trials of it, and the intervals say why:
+`7 and 19` is an octave apart, `-8 and 17` is two octaves and a tone. Sources an
+octave apart sharing an envelope are not merely hard to separate, they are
+*mathematically identical* to one oscillator with a different waveform. That one
+needs the rank-within-a-group work, not another tolerance.
+
+### Roles before counting, and the two thirds of it that did not pay
+
+The plan was to classify partials by role — harmonic body, noise, transient —
+and group only the body. Two thirds of that turned out to be wrong, and the
+measurements are worth keeping because it is an obvious idea to have again.
+
+**Filtering the grouping pool bought nothing.** Splitting the tracked partials
+into a steady body and unstable fragments and handing grouping only the body
+scored 62.5% either way at the loosest threshold that kept counting intact, and
+*hurt* once a duration test was added — 54.2%, because duration correlates with
+loudness and the partials it discarded belonged to the quiet second source the
+count was already missing. Grouping's own guards were already doing this job:
+salience charges for predicted harmonics that are absent, and a later group has
+to show its own bottom.
+
+**And the split is not a measurement.** At a 2048-point window a violin read 72%
+of its tracked energy in unstable partials against a clarinet's 0.9%, which
+looks like exactly the discrimination wanted. But the fitter picks its window
+from the fundamental, and at the 1024 points it actually uses, both samples read
+0.03%. A number that moves three orders of magnitude with an analysis window is
+measuring the window.
+
+**What did pay is measuring the noise in the spectrum.** `Roles::noiseShare`
+takes the energy sitting *between* the harmonics of the fitted fundamental. That
+is the distinction spectral flatness cannot make: broadband noise lifts the
+floor between partials, while a partial wandering with vibrato stays near its
+own harmonic. It reads 0.29 on the violin and 0.06 on the clarinet, at any
+window, and `autosynth_diff` reports the same quantity through the same function
+so the diagnostic and the fitter cannot drift apart.
+
+That number now sets the noise ceiling, which used to be a constant. A fixed
+ceiling says "every pitched sound may hiss this much", and the level solve takes
+whatever it is offered, because broadband energy lowers a log-spectral error
+wherever the harmonic fit is imperfect. Against 24 noise-free harness targets:
+
+| | invented noise | audible in | count exact | spectral |
+|---|---|---|---|---|
+| fixed ceiling | 0.064 | 16 of 24 | 62.5% | 0.571 |
+| measured | 0.038 | 14 of 24 | 62.5% | 0.579 |
+
+Every one of those is an error — the harness generates its targets noise-free —
+and it is an error no distance metric objects to, which is why the harness now
+reports it on its own line rather than letting it hide inside the averages.
+
+The threshold was chosen against both, and the disagreement is worth recording.
+At 0.25 the harness count fell to 58.3% on a single knife-edge trial while the
+violin came out `ok` on all nine diagnostics; at 0.50 the count held and the
+invented noise halved again, but the violin lost nearly all its noise (0.077
+measured against a target of 0.287) and no longer sounded like a bowed string.
+0.35 keeps the count, halves the invented noise, and leaves the violin 0.06
+clean.
+
+### The transient role, and why the noise does not get its own envelope
+
+This one was built, measured and taken out again, and the measurements are the
+reason it is written down rather than quietly deleted.
+
+The premise was sound. Measured frame by frame, the energy between the
+harmonics does not follow the energy on them: on both real samples the noise
+leads the note in by 6 to 8 dB and outlives it by 14 to 24. An amplitude
+envelope fitted to the *total* loudness is therefore fitted to a mixture of two
+shapes that disagree, and lands between them — which looked like a good
+explanation for both fits still reaching full level about 0.1 s early.
+
+So the noise got its own ADSR, fitted to the inter-harmonic contour up to
+note-off, and its own reverb send; the amplitude envelope was refitted to the
+harmonic contour alone. Every part of that is defensible on paper. All of it
+made things worse:
+
+| | spectral | centroid (oct) | count | invented noise |
+|---|---|---|---|---|
+| before | 0.579 | 0.283 | 62.5% | 0.038 |
+| with the split | 0.595 | 0.320 | 62.5% | 0.050 |
+
+and on the real samples, which is where it was supposed to help, the violin's
+attack went from 0.10 s short of its target to 0.29 s short and its noise
+collapsed from 0.224 to 0.081 against a target of 0.287.
+
+Three things went wrong, and two of them are worth remembering:
+
+- **The split is defined against one fundamental.** With two sources present the
+  second one's partials sit away from the first one's harmonics, so they land on
+  the noise side of the line and both contours become fiction. Guarding the
+  whole thing to single-source fits changed nothing measurable, which says the
+  damage was elsewhere too.
+- **An ADSR cannot express "do nothing".** A release of zero still cuts the
+  tail, so simply adding a second envelope to the signal path changed the sound
+  of every patch that had never fitted one. That needed an explicit
+  `noiseEnvEnabled` gate, in the way the per-oscillator envelopes already have
+  one — which is the general lesson: a new modulator in the engine is a change
+  to existing patches unless it is switched off by name.
+- **The two envelopes then competed.** With the noise on its own release and its
+  own send, the level solve, the noise ceiling and the reverb were all fitting
+  the same tail, and the result moved further from the target in every direction
+  at once.
+
+What survives is the measurement itself. A transient role is still the most
+likely explanation for the attack error, but it needs somewhere to *go* — the
+IR has no transient generator, and bolting the job onto the noise source, which
+is flat and static, only spreads the error around. The next attempt should add
+the generator first and fit it second.
+
+### Three things a listener heard that no metric did
+
+A musician listening to the fits reported two faults in one sentence: the
+clarinet had lost its vibrato, and the violin "vacuums back, as if you rewind an
+old tape" in the first half second. Both were real, both were traced, and none
+of the three underlying bugs would have been found by the recovery harness,
+because all three depend on a *played* note rather than a synthesised one.
+
+**The tremolo was fitted with a 1.78 second delay.** `fadeIn` measured how long
+the modulation took to reach 70% of its **peak** excursion. A real tremolo is
+not uniform, so some cycle is always the widest, and on this clarinet the widest
+one happened to land 1.78 s into a three-second note. Two thirds of the note
+therefore rendered perfectly steady. Referenced to the **median** excursion
+instead, the same signal reports 0.07 s. A synthesised LFO has no widest cycle,
+which is exactly why the harness never saw it.
+
+**The decay was measured on a wobbling curve.** The fall from the attack peak
+to the sustain was found by walking the *raw* amplitude contour until it dropped
+below target — and on a note with vibrato, the first trough after the peak
+crosses it immediately. A violin came back with a 5 ms fall from full level to
+46%: a 3.7 dB cliff, which no bow makes. Judged on the same smoothed contour
+that `fullLevel` already uses, it becomes a real measurement, and the harness
+agrees: mean `amp_env.decay` error 0.442 to 0.431.
+
+Two nearby ideas were tried and rejected by ground truth, which is worth
+recording because both sound right: starting the decay search from the
+*contour's* peak rather than the raw one (decay error 0.431 to 0.444, counting
+66.7% to 62.5%), and flooring the decay at what the smoothing can resolve
+(0.431 to 0.445). Both would have removed the violin's cliff. Neither is a
+better measurement.
+
+**And the attack is a straight line, which is a real gap — but curving it is
+not the fix.** The `curve` parameter shapes the decay and the release; the
+attack segment is `t / attack`, a linear ramp in *amplitude*. Linear amplitude
+is a very quiet first third: with the envelope reaching nine tenths at exactly
+the right moment, the fit was still 16 dB below the target at note-on and 5 to 9
+dB below it for the first quarter second, so the note emerged out of
+near-silence instead of starting.
+
+Applying the same curve to the attack halved that gap — the fit caught the
+target by 0.19 s instead of 0.35 — and it was reverted anyway. Three reasons,
+in the order they became clear. The harness disagreed in part: loudness envelope
+improved from 4.30 to 3.90 dB but spectral distance went from 0.566 to 0.614. It
+was the only change in the project to make the engine diverge from the frozen
+reference render, which had to be re-blessed. And a listener judged both samples
+worse, which settled it.
+
+The diagnosis of *why* is the part worth keeping. One curve cannot describe an
+attack, a decay and a release at once. Asked to, the fit lands on a compromise
+that suits none of them: the clarinet's came back at 5.5 where it had been 2.5,
+and everything downstream of the envelope shifted with it. A curved attack needs
+its own parameter, or it needs to stay out.
+
+**Two further hypotheses about "it sounds noisy", both wrong.** Worth recording
+because each was plausible and each took a measurement to kill. First, that the
+tremolo rate was an octave out — `dominantRate` takes the tallest spectral
+peak, and an asymmetric oscillation puts energy on its own second harmonic, the
+same trap already documented in the unison estimator. It is not happening here:
+the detector reports an oscillation ratio of 1.21, which is what a correctly
+identified rate looks like. Second, that the 0.30 s detrend was high-passing a
+slow tremolo away before the rate search — it does sit awkwardly against a
+`kMinRateHz` of 0.3, but lengthening it to 0.6 s or 1.0 s does not reveal a
+slower rate and does destroy detection elsewhere (spectral 0.566 to 0.585 and
+0.612; the violin loses its vibrato entirely).
+
+**A fourth — and this one is a modelling gap, not a bug.** A listener still
+reported the clarinet as having "more vibrato than the original" while every
+metric said the opposite: our wobble measured *shallower* than the target's, 2.6
+dB against 3.3. Both were right. Taking the spectrum of the loudness envelope
+directly, outside our own code:
+
+| | spectrum of the amplitude envelope, 0.4 to 2.9 s |
+|---|---|
+| clarinet target | 2.00 Hz 1.00, 0.80 Hz 0.82, 1.60 Hz 0.82, 3.61 Hz 0.77, 0.40 Hz 0.70 |
+| clarinet fit | 3.21 Hz 1.00, 3.61 Hz 0.72, 2.80 Hz 0.32, then nothing |
+
+The target's amplitude does not oscillate. It *wanders*, with energy spread from
+0.4 to 3.6 Hz and no peak worth the name — breath and room, not tremolo. The
+fit replaces that with one clean sinusoid, and a clean sinusoid is audibly
+vibrato however shallow it is. Depth was never the problem; regularity was.
+
+Nothing available separates the two cases. `concentration` is the obvious
+candidate and it points the wrong way: the clarinet's diffuse wander scores 0.23
+and the violin's genuine pitch vibrato 0.08, so any threshold that rejected the
+clarinet would take the violin's real vibrato with it. The rate is not wrong
+either, by our own detector's oscillation ratio, and three separate attempts to
+find it wrong — an octave error, a too-short detrend, a double high-pass —
+were each killed by measurement. This wants either an LFO whose rate and depth
+drift, or a periodicity statistic better than the concentration of a
+periodogram. It is on the roadmap as its own item.
+
+What *was* wrong was the diagnostic. `autosynth_diff` had its own wobble-rate
+estimator — smooth, then count sign changes — and the smoothing that makes
+crossing-counting usable is also a low-pass, so it read a pure 3.31 Hz sine as
+2.8 Hz. It now calls `Modulation::dominantRateHz`, the same estimator the fitter
+acts on. The rule this is the third instance of: a diagnostic that measures a
+quantity differently from the code it is judging will eventually accuse it of a
+bug it does not have.
+
+### Attack: a parameter is not a measurement
+
+Both real samples were fitted with visibly wrong attacks, and there were two
+different bugs stacked on top of each other.
+
+**`fitAdsr` returned a measurement in a parameter's field.** Attack was measured
+as the time the contour took to reach nine tenths of the level it holds, which
+is the right measurement — but it was then written straight into the ADSR's
+`attack`, *and* the fit went on to choose a curve. With a curve of 3 the
+envelope is already at nine tenths a third of the way through its attack
+segment, so a violin measured at 0.401 s rendered as 0.277. The analysis had not
+made an error; the write-out had. `EnvelopeFit::attackSeconds` is now the
+measurement, `fitAdsr` returns the parameter that *renders as* that measurement,
+and `test_fit.cpp` renders the fitted envelope and measures it back to keep the
+two in step.
+
+**Refinement was re-deciding it.** Given the full range, CMA-ES moved the
+violin's attack to 0.123 s and the clarinet's to 0.501 — opposite directions,
+both away from the truth, because a spectral distance is nearly blind to the
+first tenth of a second and will spend it buying accuracy elsewhere. That is
+precision overruling structure, which is the split this project keeps.
+
+Bounding the *parameter* to half-to-double the analysed value was the first
+attempt, and it is not enough, because the rendered attack depends on the attack
+and the curve **together** and the curve is legitimately searchable. Held inside
+those bounds a violin whose envelope should have measured 0.40 s still rendered
+at 0.29, because refinement had flattened the curve underneath it.
+
+So the attack is now *derived rather than searched*: what refinement holds fixed
+is the crossing time, and the attack parameter is re-solved against whatever
+curve each candidate chose. CMA-ES keeps the curve; the envelope keeps its shape
+in time.
+
+**And the solve itself had the same bug in miniature.** The first version
+assumed the crossing was a fixed fraction of the attack segment, which is only
+true when the decay does not pull the level down underneath it —
+`attackSeconds` measures nine tenths of the level the note *holds*, not of the
+attack's own peak, and with a sustain of 0.45 those are far apart. Bisecting
+against `Envelope::evaluate` instead is exact and costs nothing offline.
+`test_fit.cpp` pins it across three curves and two sustains.
+
+| | session start | parameter bounds | derived crossing |
+|---|---|---|---|
+| clarinet (target 0.337 s) | 0.501 | 0.256 | **0.331** |
+| violin (target 0.401 s) | 0.123 | 0.277 | 0.299 |
+
+The harness improved with it, which is the part worth noticing: oscillator
+counting went from 62.5% to **66.7%** and spectral distance from 0.579 to 0.566.
+An envelope that keeps its measured shape is not just more faithful, it leaves
+the optimiser with fewer ways to spend its budget on nothing.
+
 ### What two real samples exposed
 
 A solo violin and a solo clarinet — four seconds each, sustained, with vibrato
@@ -569,6 +1105,137 @@ imitating the reverb tail. A wrong analysis outscored a right one because the
 patch had no other way to account for a room, which is exactly why the two must
 be separated structurally and never left to a distance metric to arbitrate.
 
+### Wavetables, and the ladder that keeps them honest
+
+Five fixed shapes and a blend between two of them is a coarse net. Measured
+against the clarinet, the best classic fit was still 6 dB out on the second
+harmonic and 15 dB out on the sixth, because no combination of sine, triangle,
+saw, square and pulse puts a peak on one harmonic and a cliff after it. Sixteen
+harmonic amplitudes can.
+
+**Every oscillator is a wavetable, and there is no switch.** A saw *is* a
+one-frame table whose frame nobody has drawn on — the same model Vital uses,
+where picking an analog shape gives you a wave source rather than a special
+case. The oscillator's `waveform`, `waveform_b`, `wave_morph` and `pulse_width`
+are that frame's *generator*.
+
+A frame stays generated until it is edited, and that is not a detail. A
+generated frame is built from its waveform's full Fourier series and
+band-limited per octave, so a saw at 220 Hz keeps all seventy-five harmonics
+that fit under Nyquist. Storing every shape as sixteen numbers instead — the
+obvious way to make "always a wavetable" true — cuts it at the sixteenth, which
+measures 1.7 octaves of brightness lost and would make every classic preset
+sound muffled for nothing. Drawn frames get private band-limited mipmaps;
+generated ones get none, because they already have one, so the memory and the
+FFTs scale with how much of the table has actually been drawn on rather than
+with `kMaxFrames`.
+
+Those FFTs are also why editing is not simply "mutate the patch and hand it
+over". A rebuild with three drawn frames measured 5 ms, and the audio callback
+try-locks the patch and outputs silence when it loses — so dragging a bar
+dropped several blocks a second. Two things fixed it. Every octave low enough to
+fit all sixteen harmonics produces the *same* table, so eleven builds became
+five and the cost fell to 1.5 ms. And `Engine::buildFrameTables` now runs
+*outside* the lock, with `adoptFrameTables` handing the result over as a vector
+move, so what the audio thread is kept out of is a pointer swap.
+
+The remaining risk is that a drawn table is the least legible thing a patch can
+contain. "Saw, morphed 40% toward a narrow pulse" is a sentence; forty-eight
+numbers are a spectrum dump with a play button, which is the thing this project
+exists not to produce. So `WavetableFit` is a ladder of three models, each rung
+taken only if it beats the one below by a margin:
+
+| rung | parameters | what it fixes |
+|---|---|---|
+| the generated frame, a blend of two shapes | 2 | nothing new — the existing behaviour |
+| one drawn sixteen-harmonic frame | 16 | the *shape* |
+| three drawn frames and a swept position | 48 + envelope | the shape *moving* |
+
+The format carries sixteen frames of sixteen harmonics, matching what Vital
+gives you to edit. The *fitter* uses at most three (`WavetableFit::kFittedFrames`):
+a played note's timbre trajectory is smooth, and past a start, a middle and an
+end the extra frames fit the analysis noise that the smoothing below exists to
+remove. The other thirteen are for a person, not for the optimiser.
+
+Measured on the two real samples, all three scored the same way:
+
+| | blend | one table | three frames | measured drift |
+|---|---|---|---|---|
+| clarinet | 0.134 | 0.025 | 0.019 | 1.8 dB |
+| violin | 0.116 | 0.017 | 0.013 | 1.4 dB |
+
+Both take a table; only the clarinet takes three frames.
+
+**The scoring has to happen on the slow profile.** The first version compared
+each model against every analysis frame's raw harmonic profile, and the two
+rivals came out within a percent of each other however far the tone actually
+travelled. The reason is in the data: frame to frame the measured balance jumps
+by 10 dB and more, because vibrato slides every partial across the analysis
+bins. That is modulation, the LFOs already carry it, and it is common to both
+models — left in, it drowns the thing being measured. Smoothing over a sixth of
+a second either side separated them cleanly: 0.025 against 0.019 rather than
+0.0684 against 0.0627.
+
+**The third rung needs an absolute floor, and it is stated in decibels.** It is
+the same number `autosynth_diff` prints as timbre drift, computed the same way,
+because a diagnostic that says a fit is too static and a fitter that decides
+whether to fix it must be measuring the same quantity. The threshold sits at
+1.5 dB on evidence rather than taste: forced on regardless, the clarinet's
+rendered drift went from 2.9 dB short of its target to 1.0 dB over it and its
+harmonic profile improved slightly, while the violin landed in the same place
+either way and would have paid thirty-two numbers for nothing.
+
+**A ratio alone is not a parsimony rule.** The same lesson the waveform blend
+had already learned, re-learned here at some cost: a clean saw scores about a
+thousandth on this error, and a table beat that too, by fitting the third
+decimal place of a profile that was already right. Every golden tone came back
+as a wavetable — and worse, several changed *oscillator count*, because a
+differently-rendered oscillator gets a different gain out of the level solve. A
+model has to be bad enough to be worth fixing before a better one is considered.
+
+**Only a source loud enough to believe gets one.** A quiet layer's harmonic
+profile is the least reliable measurement in the analysis: it is read on top of
+a louder sound, and partial tracking hands a shared partial to whichever source
+is stronger. Below a quarter of the loudest source's energy, an oscillator keeps
+its classic waveform.
+
+**The frames are not searched, and they are not automatable.** Refinement never
+sees them, for the same reason it never sees the LFO rate: they are a
+measurement, and re-deciding them with a distance metric is the structure /
+precision split going the wrong way. They are also absent from the parameter
+layout — sixteen amplitudes times three frames are not knobs, and exposing them
+would let a host automate an FFT onto the audio thread. `FrameTables::matches`
+is what makes that safe in the other direction: `setPatch` can be called from a
+parameter callback, so the rebuild is skipped unless the frame data genuinely
+differs, which happens only on patch load and analysis.
+
+**Both engines have to agree on what a frame is.** Frames are built in sine
+phase, like every fixed shape except the pulse, so a crossfade of two tables is
+exactly a crossfade of their harmonic amplitudes — the fitter's model of the
+oscillator is the oscillator, not an approximation of it. There is one
+definition of what "saw" means as sixteen numbers —
+`WaveTables::blendedHarmonics` — and the oscillator, the fitter and the editor
+all call it. `test_wavetable.cpp` pins both ends of that: where Nyquist rather
+than the frame length limits them, a drawn frame and the fixed shape are the
+same signal, and where it does not, an undrawn saw is more than twice as bright
+as the same saw written out as sixteen harmonics.
+
+**Editing.** The wavetable row of each oscillator strip draws the selected
+frame's harmonics as sixteen bars and lets you drag them; the other active
+frames stay visible as faint ticks, because the point of a multi-frame table is
+the movement between frames and editing one blind to the others hides exactly
+that. The first drag on a generated frame seeds it from the shape it was
+generated from, so you move one bar rather than replacing the sound with a
+single sine. Which frame is being edited is *not* a parameter: it is a view,
+like solo and mute, and a saved patch must not remember which frame someone
+happened to have open.
+
+**One scale factor for the whole set.** Each table is *not* normalised on its
+own. Peak-normalising per frame would flatten the differences between frames,
+and it would do it by crest factor rather than by loudness — a frame with more
+harmonics has a taller peak at the same energy, so it would come out quieter and
+moving the position would sound like a volume change instead of a timbre change.
+
 ### Traps found along the way
 
 - **Absolute cutoff is not identifiable.** Source spectrum times filter
@@ -602,19 +1269,27 @@ be separated structurally and never left to a distance metric to arbitrate.
 
 ## 5. Roadmap
 
-Roughly in priority order.
+In priority order, which is the project owner's call and not a technical
+ranking: rank-within-a-group, then LFO wander, then the attack curve, then
+formants, then a Vital exporter. Linux and macOS are explicitly *not* wanted for
+now — Windows is enough — and stereo comes after the exporter.
 
 ### Restore what the Python removal cost
 
 - ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth_eval`, see
   [Measuring the fitter](#measuring-the-fitter).
-- **Port NMF rank selection** (`fit/rank.py`). Not on the shipped path, but
-  needed for "rank within a group" below.
+- ~~Port NMF rank selection.~~ **Done** — `src/fit/Nmf.cpp`, and unlike the
+  Python original it *is* on the shipped path: run per harmonic group rather
+  than globally, which is the placement that makes it answerable.
 
 ### Oscillator counting — the real weakness
 
 At ~33% exact, this is the ceiling on everything else.
 
+- ~~Split the accuracy figure by direction.~~ **Done** — `autosynth_eval`
+  prints a truth-against-fitted confusion matrix and lists every miscount with
+  its intervals and levels. See
+  [Counting: two bugs the confusion matrix found](#counting-two-bugs-the-confusion-matrix-found).
 - ~~Unison by beating.~~ **Done** — `Grouping::detectUnisonBeating`. See
   [Unison by beating](#unison-by-beating) below. What remains is recovering the
   voice *count*: the estimator reports two, which is the minimum that explains a
@@ -622,21 +1297,53 @@ At ~33% exact, this is the ceiling on everything else.
   than the full spread. For three voices spread over 20 cents it returns two
   voices 10 cents apart — a faithful description of the beating, and not the
   patch that produced it.
-- **Roles before counting.** Detect sub-octave energy, noise floor and transient
-  separately; group only the harmonic body. More stable, and the resulting patch
-  is more legible.
-- **Rank within a group.** `PartialFit` assigns one oscillator per source, but
-  several oscillators can share a fundamental and differ only in waveform and
-  envelope. Needs the NMF port above, run per group rather than globally.
+- ~~Roles before counting.~~ **Partly done, and partly disproved** — see
+  [Roles before counting](#roles-before-counting-and-the-two-thirds-of-it-that-did-not-pay).
+  The noise floor is now measured and bounds the noise level. Grouping the
+  harmonic body alone was measured and does not help. Separating the transient
+  onto its own envelope was built and measured and made things worse in every
+  direction — see
+  [The transient role](#the-transient-role-and-why-the-noise-does-not-get-its-own-envelope).
+  It is still the most likely explanation for the attack error, but it needs a
+  generator of its own in the IR before it can be fitted to anything.
+- ~~Rank within a group.~~ **Done** — `nmf::selectRank` and
+  `splitByRank`, see
+  [Rank within a group](#rank-within-a-group-and-the-four-guards-it-needed).
+  Counting 66.7% to 70.8%, and three-source targets recovered for the first
+  time. The remaining misses are still octave-related, so the machinery is in
+  place but that instance is not solved.
 
 ### Modulation and effects
+
+- ~~Measure how mechanical an LFO is.~~ **Done** — `Modulation::detectWander`,
+  reported by `autosynth_diff`, see
+  [Wander](#wander-measuring-how-mechanical-an-lfo-is). The engine can chain
+  LFOs; what the fitter lacks is a slot to spend on one. **Next:** either a
+  third slot with the harness re-baselined deliberately, or a rule for when a
+  modulator is worth more than the modulation it displaces.
+- **An LFO is the wrong model for human wander, and it is audible.** Measured on
+  a clarinet, the amplitude envelope's spectrum is spread from 0.4 to 3.6 Hz
+  with no dominant peak; the fit gives it a single 3.2 Hz sinusoid, and a
+  listener hears mechanical vibrato where the recording has breath. See
+  [Three things a listener heard](#three-things-a-listener-heard-that-no-metric-did).
+  Three possible directions. **An LFO modulating another LFO**, which is how
+  Vital's mod matrix does it and which builds wander out of periodic parts
+  rather than out of noise {d} a slow LFO on a fast one's rate produces exactly
+  the smeared spectrum measured above, and it stays a *readable* patch, which a
+  random walk does not. Or give the LFO an internal drift. Or find a periodicity
+  statistic that separates "oscillates" from "wanders", which `concentration`
+  demonstrably does not (0.23 for diffuse clarinet wander against 0.08 for real
+  violin vibrato).
 
 - **Mod matrix, and MSEG escalation.** Two LFO slots removed the worst
   limitation (vibrato and tremolo no longer compete), but routing is still
   one destination per slot rather than a matrix. Separately, the slow half of
   the envelope should escalate ADSR → multi-segment only when the residual
   justifies the extra parameters.
-- **Reverb detection — now the top priority.** Measured on two real samples,
+- ~~Reverb detection.~~ **Done** — `EffectsFit::detectReverb`, see
+  [Fitting the room](#fitting-the-room). The original entry is kept below
+  because the trap it describes is still the reason the code is shaped as it is.
+  Measured on two real samples,
   the un-fitted reverb tail is 27 dB of error against a 4 dB note body: it is
   the entire remaining gap, and any library sample will have it. Fitting one is
   blind dereverberation and realistically gets a heuristic — detect a long
@@ -646,6 +1353,9 @@ At ~33% exact, this is the ceiling on everything else.
   correct one because the release was imitating the reverb.
 
 ### Platform and reach
+
+Deferred by decision, not by difficulty: Windows is enough for now, and stereo
+waits until after the exporter.
 
 - **Linux support.** Nothing here is deliberately Windows-only: JUCE is
   cross-platform, the DSP is standard C++17, and CMake already selects the
@@ -663,6 +1373,46 @@ At ~33% exact, this is the ceiling on everything else.
 - **Stereo.** Rendering is easy. *Fitting* is a separate project: the analysis
   chain is mono by construction, and the IR has no pan or unison stereo spread,
   so there is nothing to widen yet. Treat it as its own phase.
+
+### Timbre and tone
+
+- ~~Wavetable oscillators.~~ **Done** — `WavetableFit`, see
+  [Wavetables, and the ladder that keeps them honest](#wavetables-and-the-ladder-that-keeps-them-honest).
+- ~~Attack.~~ **Mostly done** — see
+  [Attack: a parameter is not a measurement](#attack-a-parameter-is-not-a-measurement).
+  The clarinet now lands on its target; the violin is still 0.10 s short and the
+  cause is *not* the envelope, which measures back correctly on its own. Ruled
+  out by measurement: the amp LFO, the filter envelope and the reverb each move
+  it by less than 10 ms.
+- ~~Give the attack its own curve.~~ **Done** — see
+  [The attack gets its own curve](#the-attack-gets-its-own-curve). The violin's
+  onset gap at 0.09 s fell from 9.3 dB to 6.3 and it now converges by 0.11 s
+  instead of 0.35.
+- ~~Formants.~~ **Subsumed, not built.** The idea was a sine oscillator tuned to
+  a harmonic multiple — three parameters for a resonance, against a whole
+  table. It was written down before the wavetable existed, and a sixteen-harmonic
+  frame already puts a peak wherever it likes. Checked before dropping it:
+  every profile error on both real samples falls in harmonics 1 to 8, inside the
+  frame's reach, so a formant oscillator would be adding parameters that
+  duplicate ones already present. The clarinet's remaining 6 dB at harmonics 5
+  to 7 is a filter-against-table interaction, not a missing resonance — its
+  frames *are* drawn, and they were fitted to the deconvolved profile while the
+  error is measured after the filter.
+- ~~Editing a fitted table.~~ **Done** — sixteen draggable harmonic bars per
+  frame. Still missing: a way to seed a frame from a shape other than the
+  oscillator's own, an undo, and a Vital wavetable exporter to take the frames
+  somewhere else.
+
+### Timbre and tone, continued
+
+- ~~Noise as an oscillator, not a global level.~~ **Done** — `Waveform::noise`,
+  see [Noise as a waveform](#noise-as-a-waveform). Unpitched material now gets a
+  fitted envelope and filter instead of a flat bed. **What is left:** a *pitched*
+  sound whose noise is shaped — a bowed string, a breathy flute — could carry
+  a noise oscillator alongside its harmonic one, which would give bow noise its
+  own attack and its own brightness. That costs an oscillator slot and has to
+  beat the global bed on merit, so it needs the same kind of parsimony rule as
+  the wavetable ladder.
 
 ### Known limitations, all currently unhandled
 

@@ -1962,11 +1962,11 @@
   "one_shot": false
  },
  "amp_env": {
-  "attack": 0.005333333333333333,
-  "decay": 0.005333333333333333,
-  "sustain": 0.9832932046855265,
-  "release": 0.005,
-  "curve": 8.0
+  "attack": 0.001000059535727,
+  "decay": 0.004999999888241,
+  "sustain": 0.983293235301971,
+  "release": 0.004999999888241,
+  "curve": 0.0
  },
  "waveform_fit": {
   "waveform": "sine",
@@ -2203,7 +2203,7 @@
   "cutoff_hz": 231.32186889648438,
   "env_amount": 0.0,
   "noise_level": 0.0,
-  "master_level": 0.488046646118164,
+  "master_level": 0.487356066703796,
   "active_oscs": 1
  }
 }

@@ -2,17 +2,21 @@
 
 #include "analysis/Grouping.h"
 #include "analysis/Partials.h"
+#include "analysis/Roles.h"
 #include "analysis/Stft.h"
 #include "analysis/Yin.h"
 #include "fit/EffectsFit.h"
 #include "fit/EnvelopeFit.h"
 #include "fit/FilterFit.h"
 #include "fit/Modulation.h"
+#include "fit/Nmf.h"
 #include "fit/Nnls.h"
 #include "fit/WaveformFit.h"
+#include "fit/WavetableFit.h"
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace autosynth
 {
@@ -81,10 +85,215 @@ std::vector<double> spectralFeatures (const float* samples, int numSamples, doub
     return out;
 }
 
+// Split one harmonic group into the oscillators it actually contains.
+//
+// Grouping asks which partials share a fundamental and stops there, so two
+// sources an octave apart arrive as one group -- the upper one's partials are
+// all harmonics of the lower one's fundamental. That is every remaining
+// under-count on the recovery harness.
+//
+// Inside the group they are still separate *components*: one oscillator makes a
+// rank-one matrix, a fixed spectral profile times one envelope, and two make it
+// rank two whatever their interval. So the question is asked here, per group,
+// where it is answerable -- not globally on a spectrogram, where the octave case
+// is hopeless and a fifth is not even sampled.
+//
+// A component's own fundamental comes out of *which* harmonics it uses. Energy
+// only on even harmonics of f0 means the component is really at 2*f0, and its
+// third harmonic is the group's sixth. The greatest common divisor of the
+// harmonics carrying real weight recovers that, and generalises past octaves to
+// twelfths and double octaves, which the harness also gets wrong.
+//
+// `flat` is the group's harmonic matrix with the filter already divided out,
+// and the rank is read from *that* rather than from the raw one. The order
+// matters as much here as it does for the waveform: a filter sweep tilts the
+// spectrum over time, which is genuinely not rank one, so a single oscillator
+// behind a moving filter factorises as two. Measured, that is what it did -- a
+// clarinet came back as two oscillators at the same pitch and a violin as
+// three, which is a worse description of both than "one".
+//
+// The components are then used as a *mask* on the original matrix rather than
+// as a reconstruction of it, so each sub-group is still in the un-deconvolved
+// domain the rest of the fitter expects, and the filter gets divided out of it
+// once, downstream, exactly as before.
+std::vector<HarmonicGroup> splitByRank (const HarmonicGroup& group,
+                                        const std::vector<float>& flat, int maxComponents)
+{
+    if (maxComponents <= 1 || group.numHarmonics < 4 || group.numFrames < 8
+        || flat.size() != group.H.size())
+        return { group };
+
+    const auto choice = nmf::selectRank (flat, group.numHarmonics, group.numFrames,
+                                         maxComponents);
+    if (choice.rank <= 1)
+        return { group };
+
+    const auto factors = nmf::factorise (flat, group.numHarmonics, group.numFrames,
+                                         choice.rank);
+    if (factors.rank != choice.rank)
+        return { group };
+
+    const auto rows = static_cast<size_t> (group.numHarmonics);
+    const auto cols = static_cast<size_t> (group.numFrames);
+
+    std::vector<HarmonicGroup> out;
+    std::vector<int> divisors;
+    for (int c = 0; c < choice.rank; ++c)
+    {
+        const auto* profile = factors.w.data() + static_cast<size_t> (c) * rows;
+        const auto* activation = factors.h.data() + static_cast<size_t> (c) * cols;
+
+        // Which harmonics this component actually *owns*.
+        //
+        // Not merely "has energy at": the factorisation leaks, and it leaks
+        // worst onto the low harmonics where the other component is loudest. A
+        // source a twelfth up came back with 1.00 on harmonic three and 0.13 on
+        // harmonic one, and the greatest common divisor of {1, 3} is 1 -- so
+        // the component that was plainly at 3*f0 claimed to be at f0, and the
+        // rule below then discarded a correct split. A harmonic counts only
+        // where this component is the dominant explanation for it.
+        std::vector<float> componentMean (static_cast<size_t> (choice.rank), 0.0f);
+        for (int r = 0; r < choice.rank; ++r)
+        {
+            double acc = 0.0;
+            for (size_t t = 0; t < cols; ++t)
+                acc += factors.h[static_cast<size_t> (r) * cols + t];
+            componentMean[static_cast<size_t> (r)] = static_cast<float> (acc / juce::jmax<size_t> (cols, 1));
+        }
+
+        auto divisor = 0;
+        for (int k = 0; k < group.numHarmonics; ++k)
+        {
+            if (profile[static_cast<size_t> (k)] <= 0.25f)
+                continue;
+
+            const auto mine = profile[static_cast<size_t> (k)] * componentMean[static_cast<size_t> (c)];
+            auto owned = true;
+            for (int r = 0; r < choice.rank && owned; ++r)
+                if (r != c)
+                    owned = mine >= factors.w[static_cast<size_t> (r) * rows + static_cast<size_t> (k)]
+                                   * componentMean[static_cast<size_t> (r)];
+            if (owned)
+                divisor = divisor == 0 ? k + 1 : std::gcd (divisor, k + 1);
+        }
+        divisor = juce::jmax (1, divisor);
+
+        HarmonicGroup sub;
+        sub.f0 = group.f0 * divisor;
+        sub.salience = group.salience;
+        sub.numFrames = group.numFrames;
+        sub.frameRateHz = group.frameRateHz;
+        sub.numHarmonics = juce::jmax (1, group.numHarmonics / divisor);
+        sub.H.assign (static_cast<size_t> (sub.numHarmonics) * cols, 0.0f);
+
+        for (int j = 0; j < sub.numHarmonics; ++j)
+        {
+            const auto k = (j + 1) * divisor - 1;
+            if (k >= group.numHarmonics)
+                break;
+
+            for (size_t t = 0; t < cols; ++t)
+            {
+                // Soft mask: this component's share of the bin, applied to what
+                // was actually measured. Using the rank-one reconstruction
+                // instead would hand the rest of the fitter a matrix the
+                // factorisation invented, and every envelope and profile read
+                // off it afterwards would be a fit to a fit.
+                float total = 0.0f;
+                for (int r = 0; r < choice.rank; ++r)
+                    total += factors.w[static_cast<size_t> (r) * rows + static_cast<size_t> (k)]
+                           * factors.h[static_cast<size_t> (r) * cols + t];
+
+                const auto mine = profile[static_cast<size_t> (k)] * activation[t];
+                const auto share = total > 1.0e-9f ? mine / total : 0.0f;
+                sub.H[static_cast<size_t> (j) * cols + t] =
+                    group.H[static_cast<size_t> (k) * cols + t] * share;
+            }
+        }
+
+        // Partials, so the unison estimator still has beating to read. Only the
+        // ones this component's fundamental actually claims.
+        for (size_t p = 0; p < group.partials.size(); ++p)
+        {
+            const auto k = static_cast<int> (std::lround (group.partials[p].meanFreq() / group.f0));
+            if (k >= divisor && k % divisor == 0)
+            {
+                sub.partials.push_back (group.partials[p]);
+                sub.harmonicIndices.push_back (k / divisor);
+            }
+        }
+
+        if (sub.energy() > 0.0f)
+        {
+            divisors.push_back (divisor);
+            out.push_back (std::move (sub));
+        }
+    }
+
+    // Two sources also have two *envelopes*.
+    //
+    // Different harmonic sets alone are not enough. A clarinet's spectrum is
+    // odd-harmonic dominated, so a factorisation can split it into an "odd" and
+    // an "even" component -- and the even one, using harmonics 2, 4, 6, looks
+    // exactly like a source an octave up. What gives it away is that the two
+    // rise and fall together: they are one instrument, and one instrument has
+    // one envelope. Two players do not.
+    //
+    // Measured, this is the guard that matters on real material: without it a
+    // single clarinet note came back as three oscillators.
+    constexpr float kMaxEnvelopeCorrelation = 0.90f;
+    for (int a = 0; a < choice.rank; ++a)
+        for (int b = a + 1; b < choice.rank; ++b)
+        {
+            const auto* ha = factors.h.data() + static_cast<size_t> (a) * cols;
+            const auto* hb = factors.h.data() + static_cast<size_t> (b) * cols;
+
+            double meanA = 0.0, meanB = 0.0;
+            for (size_t t = 0; t < cols; ++t)
+            {
+                meanA += ha[t];
+                meanB += hb[t];
+            }
+            meanA /= static_cast<double> (cols);
+            meanB /= static_cast<double> (cols);
+
+            double num = 0.0, da = 0.0, db = 0.0;
+            for (size_t t = 0; t < cols; ++t)
+            {
+                const auto x = ha[t] - meanA, y = hb[t] - meanB;
+                num += x * y;
+                da += x * x;
+                db += y * y;
+            }
+            const auto denom = std::sqrt (da * db);
+            const auto correlation = denom > 1.0e-12 ? num / denom : 1.0;
+            if (correlation > kMaxEnvelopeCorrelation)
+                return { group };
+        }
+
+    // Only a split into *different fundamentals* is a split into sources.
+    //
+    // Two components sharing one fundamental are not two oscillators, they are
+    // one oscillator whose timbre moves -- and that already has a model, the
+    // wavetable frames, which describe it in sixteen numbers instead of a whole
+    // second oscillator. Without this rule the two models compete for the same
+    // evidence and the more expensive one wins by default: a clarinet with 4.3
+    // dB of measured drift came back as two oscillators at the same pitch, and
+    // a violin as three. It is the same discipline as the release and the
+    // reverb -- two mechanisms that explain one observation have to be
+    // separated by structure, never by whichever fits marginally better.
+    const auto sameFundamental = std::adjacent_find (divisors.begin(), divisors.end(),
+                                                     std::not_equal_to<>()) == divisors.end();
+    if (sameFundamental)
+        return { group };
+
+    return out.size() >= 2 ? out : std::vector<HarmonicGroup> { group };
+}
+
 } // namespace
 
 Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamples,
-                                   double sampleRate, double gateSeconds)
+                                   double sampleRate, double gateSeconds, float noiseCeiling)
 {
     std::vector<int> active;
     for (int i = 0; i < kNumOsc; ++i)
@@ -192,7 +401,76 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
     // Until it is a better model, a pitched fit gets a bounded amount of it.
     // A sound that really is broadband takes the other branch in `fit`, which
     // proposes no oscillators at all and is not capped here.
-    patch.noiseLevel = juce::jmin (patch.noiseLevel, kMaxPitchedNoise);
+    patch.noiseLevel = juce::jmin (patch.noiseLevel, noiseCeiling);
+
+    return patch;
+}
+
+Patch PartialFit::calibrateNoise (Patch patch, const float* target, int numSamples,
+                                  double sampleRate, double gateSeconds, float ceiling)
+{
+    if (ceiling <= 1.0e-6f || numSamples <= 0 || patch.rootHz <= 20.0f)
+    {
+        patch.noiseLevel = 0.0f;
+        return patch;
+    }
+
+    const auto wanted = Roles::noiseShare (target, numSamples, sampleRate, patch.rootHz);
+
+    // Only when the target is *substantially* noisier, because this measurement
+    // cannot tell hiss from smearing.
+    //
+    // A vibrato'd oscillator spreads energy between its own harmonics, so a
+    // perfectly clean synthetic target still measures inter-harmonic energy --
+    // and matching that number means adding hiss to imitate a wobble. Measured
+    // on the recovery harness, whose targets are generated noise-free, chasing
+    // it without this margin cost 0.10 octaves of brightness. A violin reads
+    // 0.29 against a fit's 0.10 and clears it easily; smearing does not.
+    constexpr double kNoiseFloor = 0.05;
+    if (wanted <= kNoiseFloor)
+    {
+        patch.noiseLevel = 0.0f;
+        return patch;
+    }
+
+    Engine engine;
+    engine.prepare (sampleRate, 512);
+    const auto duration = numSamples / sampleRate;
+
+    const auto renderedShare = [&] (const Patch& candidate)
+    {
+        engine.setPatch (candidate);
+        juce::AudioBuffer<float> buffer;
+        engine.renderOffline (buffer, candidate.rootHz, duration, gateSeconds);
+        return Roles::noiseShare (buffer.getReadPointer (0), buffer.getNumSamples(),
+                                  sampleRate, candidate.rootHz);
+    };
+
+    // Start from something audible rather than from whatever the level solve
+    // left, so the first measurement is informative even when it left nothing.
+    patch.noiseLevel = juce::jlimit (1.0e-3f, ceiling, juce::jmax (patch.noiseLevel, 0.02f));
+
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        const auto have = renderedShare (patch);
+        if (have <= 1.0e-6)
+            break;
+
+        // A source's own inharmonic content is already in there, so the noise
+        // can only ever add. Asking it to remove any is a sign the fit is
+        // hissing for some other reason, and the right answer is silence.
+        if (have >= wanted * 0.75)
+        {
+            patch.noiseLevel = pass == 0 ? 0.0f : patch.noiseLevel;
+            break;
+        }
+
+        const auto scale = std::sqrt (wanted * (1.0 - have) / juce::jmax (have * (1.0 - wanted), 1.0e-9));
+        patch.noiseLevel = juce::jlimit (0.0f, ceiling,
+                                         static_cast<float> (patch.noiseLevel * scale));
+        if (patch.noiseLevel >= ceiling)
+            break;
+    }
 
     return patch;
 }
@@ -241,15 +519,66 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     trackOptions.hop = options.hop;
     trackOptions.fftSize = windowForF0 (f0Hint > 0.0 ? f0Hint : 100.0, sampleRate);
     const auto partialSet = PartialTracker::track (samples, numSamples, sampleRate, trackOptions);
+
     const auto groups = Grouping::group (partialSet, options.maxOscillators, options.tolCents);
 
     if (groups.empty() || f0Hint <= 0.0 || confidence <= 0.0)
     {
-        // Nothing periodic to model: hand it to the noise source rather than
-        // inventing an oscillator to explain broadband energy.
-        patch.noiseLevel = 0.5f;
-        patch.filter.type = FilterType::off;
+        // Nothing periodic to model. This used to set a bare global noise level
+        // and switch the filter off, which describes a cymbal and a snare and a
+        // breath the same way: flat, static, and lasting exactly as long as the
+        // amplitude envelope says.
+        //
+        // As an *oscillator* it inherits everything an oscillator has. The
+        // envelope shapes it, the filter colours it, and both are already
+        // fitted by the code below -- so a noise source now gets a measured
+        // attack and a measured brightness instead of neither.
+        // Silence is not unpitched material, it is nothing, and a noise
+        // oscillator at any level is a worse description of it than an empty
+        // patch. `masterLevel` has already been clamped to a floor by this
+        // point, so the peak is measured again here rather than read back.
+        auto loudest = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+            loudest = juce::jmax (loudest, std::abs (samples[i]));
+        if (loudest < 1.0e-3f)
+        {
+            patch.noiseLevel = 0.0f;
+            patch.filter.type = FilterType::off;
+            patch.ampEnv = globalEnv;
+            return patch;
+        }
+
+        auto& osc = patch.oscs[0];
+        osc.enabled = true;
+        osc.waveform = Waveform::noise;
+        osc.waveformB = Waveform::noise;
+        osc.waveMorph = 0.0f;
+        osc.level = 1.0f;
+        patch.noiseLevel = 0.0f;
         patch.ampEnv = globalEnv;
+
+        // Brightness, from where the energy actually is. A one-pole at the
+        // spectral centroid is a crude match to a shaped noise floor, and it is
+        // a great deal less crude than no filter at all.
+        const auto spectrogram = Stft::magnitudeSpectrogram (samples, numSamples, 2048,
+                                                             options.hop, sampleRate);
+        const auto centroid = Stft::spectralCentroid (spectrogram);
+        double sum = 0.0;
+        int counted = 0;
+        for (const auto c : centroid)
+            if (c > 20.0f)
+            {
+                sum += c;
+                ++counted;
+            }
+
+        patch.filter.type = FilterType::lowpass;
+        patch.filter.cutoffHz = counted > 0
+                              ? juce::jlimit (30.0f, 18000.0f,
+                                              static_cast<float> (sum / counted) * 2.0f)
+                              : 18000.0f;
+        patch.filter.resonance = FilterFit::kDefaultQ;
+        patch.filter.envAmount = 0.0f;
         return patch;
     }
 
@@ -282,20 +611,49 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
         for (size_t i = 0; i < shapeTimes.size(); ++i)
             shapeTimes[i] = i < partialSet.times.size() ? partialSet.times[i]
                                                         : static_cast<float> (i * options.hop / sampleRate);
-        patch.filter.env = EnvelopeFit::fitAdsr (split.shape, shapeTimes, gateTime, 0.05f, oneShot);
+        // Not an amplitude contour: a cutoff trajectory is already measured in
+        // octaves, so fitting its attack curve in decibels takes the logarithm
+        // twice and bends it far too hard.
+        patch.filter.env = EnvelopeFit::fitAdsr (split.shape, shapeTimes, gateTime, 0.05f,
+                                                 oneShot, false);
     }
+
 
     // --- sources -> oscillators --------------------------------------------
     auto ordered = groups;
     std::sort (ordered.begin(), ordered.end(),
                [] (const HarmonicGroup& a, const HarmonicGroup& b) { return a.energy() > b.energy(); });
 
-    const auto multi = ordered.size() > 1;
-    const auto count = juce::jmin (static_cast<int> (ordered.size()), options.maxOscillators);
+    // Groups first, then the oscillators inside each of them. A group that
+    // holds two sources spends two of the budget; the loudest group is split
+    // first, because if the budget runs out it should run out on the quietest
+    // thing in the sound.
+    std::vector<HarmonicGroup> sources;
+    for (const auto& g : ordered)
+    {
+        const auto remaining = options.maxOscillators - static_cast<int> (sources.size());
+        if (remaining <= 0)
+            break;
+        // Flattened here, for the rank decision only. The sub-groups come back
+        // in the original domain and are deconvolved downstream like any other.
+        const auto flatForRank = FilterFit::deconvolve (g.H, g.numHarmonics, g.numFrames,
+                                                        trajectory.cutoffHz, g.f0);
+        for (auto& part : splitByRank (g, flatForRank, remaining))
+        {
+            sources.push_back (std::move (part));
+            if (static_cast<int> (sources.size()) >= options.maxOscillators)
+                break;
+        }
+    }
+    if (sources.empty())
+        sources = ordered;
+
+    const auto multi = sources.size() > 1;
+    const auto count = juce::jmin (static_cast<int> (sources.size()), options.maxOscillators);
 
     for (int i = 0; i < count; ++i)
     {
-        const auto& g = ordered[static_cast<size_t> (i)];
+        const auto& g = sources[static_cast<size_t> (i)];
         auto& osc = patch.oscs[static_cast<size_t> (i)];
         osc.enabled = true;
         osc.level = 1.0f;
@@ -324,6 +682,38 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
         // Unison is visible only because partials are tracked individually.
         Grouping::estimateUnison (g, osc.unisonVoices, osc.unisonDetune);
 
+        std::vector<float> groupTimes (static_cast<size_t> (g.numFrames));
+        for (size_t j = 0; j < groupTimes.size(); ++j)
+            groupTimes[j] = j < partialSet.times.size() ? partialSet.times[j]
+                                                        : static_cast<float> (j * options.hop / sampleRate);
+
+        // Harmonic frames, from the same filter-flattened array the waveform
+        // came from. Fitted after the filter is already frozen, because a
+        // free-form spectrum and a cutoff explain the same signal and whichever
+        // is fitted second gets only the residue -- which is the one that should
+        // have the freedom.
+        //
+        // Keeps the blend underneath it either way: the frames can be switched
+        // off in the editor and what is left is still a described sound, not
+        // silence.
+        const auto share = dominant.energy() > 0.0f ? g.energy() / dominant.energy() : 0.0f;
+        const auto table = WavetableFit::fit (flat.data(), g.numHarmonics, g.numFrames,
+                                              groupTimes, static_cast<float> (gateTime), oneShot,
+                                              blend, share);
+        if (table.useCustomFrames)
+        {
+            osc.numFrames = table.numFrames;
+            for (int f = 0; f < table.numFrames; ++f)
+            {
+                auto& frame = osc.frames[static_cast<size_t> (f)];
+                frame.custom = true;
+                frame.harmonics = table.frames[static_cast<size_t> (f)];
+            }
+            osc.framePosition = table.position;
+            osc.framePositionEnvAmount = table.envAmount;
+            osc.framePositionEnv = table.env;
+        }
+
         if (multi)
         {
             osc.envEnabled = true;
@@ -332,10 +722,6 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
                 for (int k = 0; k < g.numHarmonics; ++k)
                     total[static_cast<size_t> (t)] += g.harmonic (k)[t];
 
-            std::vector<float> groupTimes (total.size());
-            for (size_t j = 0; j < groupTimes.size(); ++j)
-                groupTimes[j] = j < partialSet.times.size() ? partialSet.times[j]
-                                                            : static_cast<float> (j * options.hop / sampleRate);
             osc.env = EnvelopeFit::fitAdsr (total, groupTimes, gateTime, 0.05f, oneShot);
         }
     }
@@ -415,7 +801,17 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     const auto residual = 1.0 - claimed / totalPartialEnergy;
     patch.noiseLevel = static_cast<float> (juce::jlimit (0.0, 1.0, residual)) * 0.5f;
 
-    return calibrateLevels (patch, samples, numSamples, sampleRate, gateTime);
+    // How much noise this material has actually got, rather than how much a
+    // pitched patch is allowed in general. Measured between the harmonics of
+    // the fundamental that was just fitted, which is the same measurement
+    // `autosynth_diff` prints as noisiness.
+    const auto share = Roles::noiseShare (samples, numSamples, sampleRate, patch.rootHz,
+                                          trackOptions.fftSize, options.hop);
+    const auto ceiling = kMaxPitchedNoise
+                       * static_cast<float> (juce::jlimit (0.0, 1.0, share / kFullNoiseShare));
+    auto calibrated = calibrateLevels (patch, samples, numSamples, sampleRate, gateTime, ceiling);
+    return calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate, gateTime,
+                           static_cast<float> (ceiling));
 }
 
 } // namespace autosynth

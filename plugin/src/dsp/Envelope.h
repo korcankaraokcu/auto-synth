@@ -68,7 +68,7 @@ public:
         {
             const auto tf = static_cast<float> (time);
             if (tf < a)
-                return tf / a;
+                return shape (tf / a, params.attackCurve);
             if (tf < a + d)
                 return 1.0f + (s - 1.0f) * shape (juce::jlimit (0.0f, 1.0f, (tf - a) / d), params.curve);
             return s;
@@ -82,7 +82,13 @@ public:
         return juce::jlimit (0.0f, 1.0f, levelAtGate * (1.0f - shape (progress, params.curve)));
     }
 
-    // Curve shaping: 0 is linear, larger bends toward exponential decay.
+    // Curve shaping: 0 is linear, larger bends toward exponential.
+    //
+    // The attack uses `attackCurve` and the decay and release use `curve`, which
+    // is the same function applied to two independent numbers. Sharing one was
+    // tried and made both real samples worse: an attack that wants to be concave
+    // and a decay that wants to be convex cannot be described by one parameter,
+    // and the fit lands between them.
     static float shape (float progress, float curve) noexcept
     {
         if (curve <= 1.0e-6f)
@@ -102,7 +108,7 @@ private:
         const auto tf = static_cast<float> (t);
 
         if (tf < a)
-            return tf / a;
+            return shape (tf / a, params.attackCurve);
         if (tf < a + d)
         {
             const auto progress = juce::jlimit (0.0f, 1.0f, (tf - a) / d);
@@ -134,7 +140,14 @@ public:
     void prepare (double sr) noexcept { sampleRate = sr; }
     void reset() noexcept { elapsed = 0.0; }
 
-    float nextSample() noexcept
+    // `rateScale` and `depthScale` come from another LFO pointed at this one.
+    //
+    // Rate modulation warps *time* rather than the rate itself, which is not a
+    // detail: the phase here is a closed form of elapsed time, so changing the
+    // rate directly would jump the phase every time the modulator moved. At a
+    // scale of one this is arithmetically identical to what it was, so nothing
+    // unmodulated changes by a bit.
+    float nextSample (float rateScale = 1.0f, float depthScale = 1.0f) noexcept
     {
         const auto t = static_cast<float> (elapsed);
         const auto phase = params.rateHz * t + params.phase;
@@ -155,8 +168,8 @@ public:
                         ? juce::jlimit (0.0f, 1.0f, t / params.delay)
                         : 1.0f;
 
-        elapsed += 1.0 / juce::jmax (sampleRate, 1.0);
-        return wave * params.depth * fade;
+        elapsed += juce::jmax (0.0f, rateScale) / juce::jmax (sampleRate, 1.0);
+        return wave * params.depth * juce::jlimit (0.0f, 4.0f, depthScale) * fade;
     }
 
 private:

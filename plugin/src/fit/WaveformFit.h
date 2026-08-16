@@ -54,6 +54,12 @@ public:
 
     static Blend matchBlend (const std::vector<float>& profile, int numMorphSteps = 17);
 
+    // The harmonic profile a blend actually produces. Needed wherever a blend
+    // has to be *scored against something else* rather than just chosen, so the
+    // rival model is compared with the same arithmetic the engine uses rather
+    // than with a re-derivation of it.
+    static std::vector<float> profileFor (const Blend& blend, int numHarmonics);
+
     // Jointly chooses waveform and lowpass cutoff.
     //
     // This is also the only thing that makes the *absolute* cutoff identifiable

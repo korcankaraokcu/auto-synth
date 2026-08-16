@@ -381,6 +381,9 @@ Patch Recovery::randomPatch (juce::Random& rng)
     }
 
     patch.filter.type = pick<FilterType> (rng, 4);
+    // Only the four *routable* destinations. `lfoRate` and `lfoDepth` point at
+    // another LFO rather than at the sound, so a target that used one would be
+    // posing a question about modulator chaining rather than about recovery.
     for (auto& lfo : patch.lfos)
     {
         lfo.shape = pick<LfoShape> (rng, 4);
@@ -630,6 +633,89 @@ juce::String Recovery::toText (const Summary& summary)
 
     out << "\noscillator count exact: "
         << juce::String (100.0 * summary.oscCountAccuracy, 1) << "%\n";
+    // Where the misses go, not just how many there are. "50% exact" says
+    // nothing about whether the fitter invents oscillators or misses them, and
+    // those are opposite bugs with opposite fixes.
+    {
+        std::map<std::pair<int, int>, int> confusion;
+        int worst = 1;
+        for (const auto& t : summary.byTrial)
+        {
+            confusion[{ t.truthOscCount, t.fittedOscCount }] += 1;
+            worst = juce::jmax (worst, t.truthOscCount, t.fittedOscCount);
+        }
+
+        out << "  truth \\ fitted";
+        for (int f = 1; f <= worst; ++f)
+            out << juce::String (f).paddedLeft (' ', 5);
+        out << "\n";
+        for (int t = 1; t <= worst; ++t)
+        {
+            out << juce::String (t).paddedLeft (' ', 15);
+            for (int f = 1; f <= worst; ++f)
+            {
+                const auto it = confusion.find ({ t, f });
+                out << juce::String (it == confusion.end() ? 0 : it->second).paddedLeft (' ', 5);
+            }
+            out << "\n";
+        }
+    }
+
+    // Every miscount, described the way the analysis would have to see it: the
+    // interval between the sources and how loud the quieter one is. Grouping
+    // proposes the count, and what it can propose depends almost entirely on
+    // those two numbers -- an octave-apart layer shares every harmonic index
+    // with the one below it, and a quiet layer's partials are the first to go
+    // missing.
+    {
+        bool any = false;
+        for (const auto& t : summary.byTrial)
+        {
+            if (t.oscCountExact)
+                continue;
+            if (! any)
+            {
+                out << "\n  miscounts (truth -> fitted, sources as semitones from the root):\n";
+                any = true;
+            }
+
+            std::vector<std::pair<int, float>> sources;
+            float loudest = 0.0f;
+            for (const auto& o : t.truth.oscs)
+                if (o.enabled && o.level > 1.0e-4f)
+                {
+                    sources.push_back ({ o.semitones, o.level });
+                    loudest = juce::jmax (loudest, o.level);
+                }
+            std::sort (sources.begin(), sources.end());
+
+            out << "    " << t.truthOscCount << " -> " << t.fittedOscCount << "   ";
+            for (const auto& [semis, level] : sources)
+                out << juce::String (semis) << " (" << juce::String (level / juce::jmax (1.0e-6f, loudest), 2)
+                    << ")  ";
+            out << "\n";
+        }
+    }
+
+    // Noise the fitter invented. Targets are generated noise-free, so every one
+    // of these is an error -- and one no distance metric objects to, because
+    // broadband energy lowers a log-spectral error wherever the harmonic fit is
+    // imperfect. It has to be reported separately or it is invisible.
+    {
+        double total = 0.0;
+        int audible = 0;
+        for (const auto& t : summary.byTrial)
+        {
+            total += t.fitted.noiseLevel;
+            if (t.fitted.noiseLevel > 0.01f)
+                ++audible;
+        }
+        const auto n = juce::jmax (1, static_cast<int> (summary.byTrial.size()));
+        out << "invented noise: mean " << juce::String (total / n, 3)
+            << ", audible in " << audible << " of " << n
+            << " noise-free targets\n";
+    }
+
     out << "root within a semitone: "
         << juce::String (100.0 * summary.rootAccuracy, 1) << "%\n";
 

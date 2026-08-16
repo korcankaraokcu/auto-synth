@@ -46,6 +46,32 @@ std::vector<double> candidateFundamentals (const std::vector<Partial>& partials)
     return merged;
 }
 
+// How close a partial has to be, in cents, to count as harmonic k.
+//
+// Cents are a relative unit and harmonic slots are not. The gap between
+// harmonic k and k+1 is about 1731/k cents, so a flat fifty-cent window is a
+// fifth of the gap at harmonic 2 and *wider than the whole gap* by harmonic 35.
+// From about the seventeenth harmonic upward the windows of adjacent slots
+// overlap, and every partial in that region matches some harmonic of whatever
+// fundamental is being tested -- so the first group claims the entire top of
+// the spectrum no matter which source the partials came from.
+//
+// That is how a second source loses its evidence. Stripped of its upper
+// partials it drops under the energy floor, no second group forms, and the
+// count comes back one short -- which the recovery harness showed as the single
+// largest failure mode, eight of the twelve miscounts.
+//
+// So the window is also capped at a fraction of the slot spacing: a partial has
+// to sit in the middle of its slot, not merely nearer to it than to the next
+// one. Vibrato does not fight this, because assignment uses each partial's mean
+// frequency and a wobble averages out of it.
+double toleranceForHarmonic (int k, double tolCents)
+{
+    constexpr double kSlotFraction = 0.35;
+    const auto spacing = 1200.0 * std::log2 ((k + 0.5) / juce::jmax (0.5, k - 0.5));
+    return juce::jmin (tolCents, kSlotFraction * spacing);
+}
+
 void assign (double f0, const std::vector<double>& freqs, double tolCents,
              std::vector<bool>& matchedOut, std::vector<int>& harmonicOut)
 {
@@ -57,7 +83,7 @@ void assign (double f0, const std::vector<double>& freqs, double tolCents,
         k = juce::jlimit (1, Grouping::kMaxHarmonic, k);
         harmonicOut[i] = k;
         const auto cents = 1200.0 * std::abs (std::log2 ((freqs[i] + 1.0e-9) / (k * f0)));
-        matchedOut[i] = (cents <= tolCents) && (freqs[i] >= f0 * 0.5);
+        matchedOut[i] = (cents <= toleranceForHarmonic (k, tolCents)) && (freqs[i] >= f0 * 0.5);
     }
 }
 
@@ -231,6 +257,14 @@ float HarmonicGroup::energy() const noexcept
     return static_cast<float> (std::accumulate (H.begin(), H.end(), 0.0));
 }
 
+// What share of a later group's energy has to sit in its first two harmonics.
+//
+// Not a large number: a source can be genuinely bright, and a bowed string puts
+// most of its energy well above the fundamental. This only has to separate "has
+// a bottom" from "has no bottom at all", which is what a group assembled from
+// another source's discarded upper partials looks like.
+constexpr double kMinLowHarmonicShare = 0.05;
+
 std::vector<HarmonicGroup> Grouping::group (const PartialSet& set, int maxGroups,
                                             double tolCents, double minEnergyFraction)
 {
@@ -306,6 +340,30 @@ std::vector<HarmonicGroup> Grouping::group (const PartialSet& set, int maxGroups
         }
         if (claimed.empty())
             break;
+
+        // A source has a bottom. Every group after the first has to show its own
+        // low harmonics, or it is not a source -- it is the leftovers of one.
+        //
+        // The tighter claim window above deliberately refuses ambiguous high
+        // partials, and a heavily vibrato'd note has plenty of those: its upper
+        // partials wander further than a harmonic slot is wide, so they fall out
+        // of the first group and sit in the pool with real energy. Left alone
+        // they assemble into a second group with an invented fundamental and no
+        // first or second harmonic under it.
+        if (! groups.empty())
+        {
+            double lowEnergy = 0.0;
+            for (size_t i = 0; i < claimed.size(); ++i)
+                if (claimedHarmonics[i] <= 2)
+                    lowEnergy += claimed[i].energy();
+
+            double claimedEnergy = 0.0;
+            for (const auto& p : claimed)
+                claimedEnergy += p.energy();
+
+            if (claimedEnergy <= 0.0 || lowEnergy < kMinLowHarmonicShare * claimedEnergy)
+                break;
+        }
 
         groups.push_back (buildGroup (f0, claimed, claimedHarmonics, set.numFrames(), bestScore,
                                       set.hop > 0 ? set.sampleRate / set.hop : 0.0));

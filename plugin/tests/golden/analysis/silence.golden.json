@@ -1944,10 +1944,10 @@
   "one_shot": true
  },
  "amp_env": {
-  "attack": 0.01,
-  "decay": 0.1,
+  "attack": 0.009999999776483,
+  "decay": 0.100000001490116,
   "sustain": 0.5,
-  "release": 0.1,
+  "release": 0.100000001490116,
   "curve": 0.0
  },
  "lfos": [],
@@ -1984,8 +1984,8 @@
   "root_hz": 220.0,
   "cutoff_hz": 8000.0,
   "env_amount": 0.0,
-  "noise_level": 0.5,
-  "master_level": 0.05,
+  "noise_level": 0.0,
+  "master_level": 0.050000000745058,
   "active_oscs": 0
  }
 }

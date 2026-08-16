@@ -205,16 +205,106 @@ double fadeIn (const std::vector<float>& y, double dt, double rate)
         magnitude[i] = std::abs (y[i]);
     const auto envelope = nd::uniformFilter1d (magnitude, span);
 
-    const auto peak = *std::max_element (envelope.begin(), envelope.end());
-    if (peak <= 1.0e-12f)
+    // Referenced to the *median* excursion, not the largest one.
+    //
+    // A real tremolo or vibrato is not uniform: some cycle is always the
+    // widest, and asking when the envelope first reached 70% of *that* asks
+    // when the wobble was at its most extreme rather than when it began. On a
+    // clarinet whose tremolo runs from the first note to the last, the widest
+    // swing happened to land 1.78 s into a three-second note, so the fit
+    // reported a 1.78 s delay and rendered two thirds of the note perfectly
+    // steady -- audibly wrong, and invisible to the recovery harness because a
+    // synthesised LFO has no widest cycle.
+    auto sorted = envelope;
+    std::sort (sorted.begin(), sorted.end());
+    const auto median = sorted[sorted.size() / 2];
+    if (median <= 1.0e-12f)
         return 0.0;
+
     for (size_t i = 0; i < envelope.size(); ++i)
-        if (envelope[i] >= 0.7f * peak)
+        if (envelope[i] >= 0.7f * median)
             return static_cast<double> (i) * dt;
     return 0.0;
 }
 
 } // namespace
+
+double Modulation::dominantRateHz (const std::vector<float>& y, double dt)
+{
+    double rate = 0.0, concentration = 0.0;
+    dominantRate (y, dt, rate, concentration);
+    return rate;
+}
+
+Modulation::Wander Modulation::detectWander (const std::vector<float>& y, double dt)
+{
+    Wander out;
+    if (y.size() < 32 || dt <= 0.0)
+        return out;
+
+    // Zero crossings, with a hysteresis band scaled to the signal so that noise
+    // around zero does not manufacture cycles.
+    double rms = 0.0;
+    for (const auto v : y)
+        rms += static_cast<double> (v) * v;
+    rms = std::sqrt (rms / static_cast<double> (y.size()));
+    if (rms <= 1.0e-9)
+        return out;
+
+    const auto band = static_cast<float> (0.25 * rms);
+    std::vector<double> crossings;
+    int state = y.front() > 0.0f ? 1 : -1;
+    for (size_t i = 1; i < y.size(); ++i)
+    {
+        if (state <= 0 && y[i] > band)
+        {
+            state = 1;
+            crossings.push_back (static_cast<double> (i) * dt);
+        }
+        else if (state >= 0 && y[i] < -band)
+        {
+            state = -1;
+        }
+    }
+    if (crossings.size() < 5)
+        return out;
+
+    // One period per pair of rising crossings.
+    std::vector<double> periods;
+    for (size_t i = 1; i < crossings.size(); ++i)
+        periods.push_back (crossings[i] - crossings[i - 1]);
+
+    auto sorted = periods;
+    std::sort (sorted.begin(), sorted.end());
+    const auto median = sorted[sorted.size() / 2];
+    if (median <= 1.0e-6)
+        return out;
+
+    // How far the period wanders, in octaves, and how fast it wanders.
+    std::vector<float> drift (periods.size());
+    double sum = 0.0, sumSq = 0.0;
+    for (size_t i = 0; i < periods.size(); ++i)
+    {
+        const auto octaves = std::log2 (periods[i] / median);
+        drift[i] = static_cast<float> (octaves);
+        sum += octaves;
+        sumSq += octaves * octaves;
+    }
+    const auto n = static_cast<double> (drift.size());
+    const auto mean = sum / n;
+    out.octaves = std::sqrt (std::max (0.0, sumSq / n - mean * mean));
+    out.cycles = static_cast<int> (drift.size());
+
+    // The drift series is sampled once per cycle, so its own rate is measured
+    // against that sampling interval rather than the audio one.
+    for (auto& v : drift)
+        v -= static_cast<float> (mean);
+    out.rateHz = dominantRateHz (drift, median);
+
+    out.found = out.octaves >= kMinWanderOctaves && out.rateHz > 0.0
+             && out.cycles >= kMinWanderCycles;
+    return out;
+}
 
 Modulation::Detected Modulation::analyseTrajectory (const std::vector<float>& y, double dt,
                                                     LfoDest dest)
@@ -502,6 +592,47 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
     std::vector<Lfo> out;
     for (int i = 0; i < std::min (maxCount, static_cast<int> (independent.size())); ++i)
         out.push_back (toLfo (independent[static_cast<size_t> (i)]));
+
+    // A spare slot goes to making the strongest modulation *human*.
+    //
+    // Measured on a violin, the player's vibrato period wanders by 0.68 of an
+    // octave across fifteen cycles while the fitted LFO's wanders by 0.03 --
+    // twenty times steadier. That difference is what a listener calls
+    // mechanical, and it is not depth: the same fit measured *shallower* than
+    // the recording and was still described as having more vibrato.
+    //
+    // An LFO pointed at another LFO's rate spreads that spike back out, and
+    // unlike a random walk it leaves a patch a person can read and edit.
+    //
+    // Only ever with a slot nobody else wanted. With two slots a modulator
+    // costs a whole modulation, and losing a violin's tremolo to smear its
+    // vibrato is not obviously a trade worth making -- so it is not made here.
+    // That is the current limit of the feature, not a judgement that the trade
+    // is wrong.
+    if (! out.empty() && static_cast<int> (out.size()) < maxCount)
+    {
+        const auto& strongest = independent.front();
+        const auto wander = detectWander (strongest.dest == LfoDest::pitch
+                                              ? trajectories.pitchCents
+                                              : strongest.dest == LfoDest::amp
+                                                    ? trajectories.ampRelative
+                                                    : trajectories.centroidOctaves,
+                                          trajectories.dt);
+
+        if (wander.found)
+        {
+            Lfo modulator;
+            modulator.shape = LfoShape::sine;
+            modulator.dest = LfoDest::lfoRate;
+            // Slow against the wobble it drives: a modulator near the carrier's
+            // own rate makes a second tone rather than a drifting one.
+            modulator.rateHz = static_cast<float> (juce::jlimit (0.05, 20.0,
+                                                                 strongest.rateHz * 0.25));
+            modulator.depth = static_cast<float> (juce::jlimit (0.0, 1.0, wander.octaves));
+            out.insert (out.begin(), modulator);
+        }
+    }
+
     return out;
 }
 

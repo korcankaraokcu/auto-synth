@@ -15,12 +15,36 @@ constexpr int kNumOsc = 3;
 // One was a real limitation: vibrato and tremolo competed for the single slot
 // and only the more periodic survived, so a sound with both could never be
 // represented.
+//
+// A third was tried, to give a *modulator* -- an LFO pointed at another LFO's
+// rate -- a slot of its own. It was reverted, and the reason is worth keeping:
+// the recovery harness randomises every continuous parameter, so a third slot
+// changes how many random draws a target consumes and therefore *which targets
+// get generated*. Its control distance moved from 2.28 to 2.46 on patches that
+// were supposed to be unchanged, which silently invalidates every number this
+// project has recorded. A modulator now competes for one of the two slots on
+// merit, which is the same rule everything else here follows.
 constexpr int kNumLfo = 2;
 
-enum class Waveform { sine, triangle, saw, square, pulse };
+// `noise` is a generator like the rest, not a special case bolted on beside
+// them. Selecting it gives the oscillator's noise everything an oscillator
+// already has -- its own level, envelope, filter and reverb send -- which is
+// exactly what the global noise bed lacks and what two failed attempts to bolt
+// an envelope onto that bed were reaching for.
+enum class Waveform { sine, triangle, saw, square, pulse, noise };
 enum class FilterType { off, lowpass, highpass, bandpass };
 enum class LfoShape { sine, triangle, saw, square };
-enum class LfoDest { none, pitch, amp, cutoff };
+// `lfoRate` and `lfoDepth` point at the *other* LFO slot, which is unambiguous
+// because there are two. That is how Vital's matrix does it, and it is the
+// cheapest way to build wander out of periodic parts: a slow LFO on a faster
+// one's rate spreads its spectrum instead of leaving a single spike.
+//
+// Which matters because a single spike is what a listener hears as mechanical.
+// Measured on a clarinet, the recording's amplitude spectrum is spread from 0.4
+// to 3.6 Hz with no dominant peak, while the fit put everything at 3.2 -- and it
+// was described as having more vibrato than the original despite measuring
+// *shallower*. Regularity, not depth, is what reads as synthetic.
+enum class LfoDest { none, pitch, amp, cutoff, lfoRate, lfoDepth };
 
 struct Adsr
 {
@@ -32,6 +56,18 @@ struct Adsr
     // envelope mis-states a plucked decay by 5-7 dB and then hits digital
     // silence while the real tail is still audible.
     float curve = 0.0f;
+
+    // The attack gets its own, and defaults to linear so nothing already
+    // written changes.
+    //
+    // Sharing `curve` was tried and reverted. A linear attack really is too
+    // quiet early -- a fit whose envelope reached nine tenths at exactly the
+    // right moment was still 16 dB below its target at note-on, and the note
+    // seemed to emerge from silence rather than start -- but one number cannot
+    // shape an attack, a decay and a release at once. Asked to, the fit lands
+    // on a compromise that suits none of them: a clarinet's came back at 5.5
+    // where it had been 2.5, and a listener judged both samples worse.
+    float attackCurve = 0.0f;
 };
 
 struct Filter
@@ -55,11 +91,58 @@ struct Oscillator
     float unisonDetune = 0.0f;
 
     // Continuous blend from `waveform` toward `waveformB`. Five fixed shapes
-    // are the real ceiling on this synth, not the oscillator count; a blend
-    // turns the waveform into a continuum, and unlike a discrete choice it is
-    // something CMA-ES can actually search.
+    // are a coarse net for a real instrument, and a blend turns them into a
+    // continuum; unlike a discrete choice it is also something CMA-ES can
+    // search.
+    //
+    // Together with `pulseWidth` above, these four fields are the *generator*
+    // for every frame of the wavetable below that nobody has drawn on -- which,
+    // for an ordinary analog patch, is the only frame there is.
     Waveform waveformB = Waveform::saw;
     float waveMorph = 0.0f;
+
+    // --- wavetable ---------------------------------------------------------
+    //
+    // Every oscillator is a wavetable. There is no switch, because there is
+    // nothing to switch between: a saw *is* a one-frame table whose frame has
+    // not been drawn on, exactly as it is in Vital, and the fields above are
+    // that frame's generator.
+    //
+    // A frame stays generated until someone edits it. That is what keeps the
+    // analog shapes analog: a generated frame is built from its waveform's full
+    // Fourier series and band-limited per octave, so a saw at 220 Hz keeps all
+    // seventy-five harmonics that fit under Nyquist. Storing it as sixteen
+    // numbers instead would cut it at the sixteenth -- measured, that is 1.7
+    // octaves of brightness gone, and every classic preset would sound muffled
+    // for no gain.
+    //
+    // Editing one converts it, and from then on it is sixteen harmonic
+    // amplitudes. Sixteen rather than a full spectrum because the deliverable
+    // is an *editable* patch: a 256-point table is a wavetable dump, which is
+    // the thing this project exists not to produce, and sixteen numbers is a
+    // curve a person can read and drag. It also maps straight onto a Vital
+    // wavetable for export.
+    struct Frame
+    {
+        bool custom = false;
+        std::array<float, 16> harmonics {};
+    };
+
+    static constexpr int kFrameHarmonics = 16;
+    static constexpr int kMaxFrames = 16;
+
+    // How many of `frames` are in use. One is an ordinary analog oscillator;
+    // more is a table the note travels through. The fitter spends the extra
+    // frames only when the tone measurably moves -- see WavetableFit.
+    int numFrames = 1;
+    std::array<Frame, kMaxFrames> frames {};
+
+    // Where between the frames the oscillator sits: 0 is the first frame, 1 the
+    // last. `framePositionEnvAmount` is how far the envelope drags it over the
+    // course of the note.
+    float framePosition = 0.0f;
+    float framePositionEnvAmount = 0.0f;
+    Adsr framePositionEnv { 0.05f, 0.4f, 0.6f, 0.2f, 0.0f };
 
     // How much of this oscillator feeds the shared reverb. Per-oscillator so
     // one layer can be drenched while another stays dry, which is the whole
@@ -124,6 +207,7 @@ struct Patch
     DelayParams delay {};
     ReverbParams reverb {};
     float noiseLevel = 0.0f;
+
     float masterLevel = 0.8f;
     // Playback metadata, not a synthesis parameter: the pitch the patch was
     // fitted at. Never optimised, never exposed as a knob.

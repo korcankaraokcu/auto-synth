@@ -460,3 +460,77 @@ TEST_CASE ("different notes get different noise", "[engine]")
             differs = true;
     CHECK (differs);
 }
+
+// Noise as a waveform, not as a bolted-on bed.
+//
+// The point of making it a waveform is that everything an oscillator already
+// has applies to it. These check that literally: the envelope shapes it, the
+// filter colours it, and two of them are two different sounds.
+TEST_CASE ("a noise oscillator is broadband and unpitched", "[engine]")
+{
+    auto patch = simplePatch (autosynth::Waveform::noise);
+    const auto noise = render (patch);
+    const auto saw = render (simplePatch (autosynth::Waveform::saw));
+
+    // Brighter than a saw at the same note, because it has no harmonic series
+    // rolling off at 1/k. Measured: 9960 Hz against 5937.
+    CHECK (meanCentroidHz (noise) > meanCentroidHz (saw) * 1.5);
+}
+
+TEST_CASE ("a noise oscillator obeys its own envelope", "[engine]")
+{
+    auto patch = simplePatch (autosynth::Waveform::noise);
+    patch.oscs[0].envEnabled = true;
+    patch.oscs[0].env = { 0.001f, 0.15f, 0.05f, 0.05f, 0.0f, 0.0f };
+
+    const auto x = render (patch);
+    const auto half = x.size() / 2;
+    const std::vector<float> early (x.begin(), x.begin() + static_cast<long> (half));
+    const std::vector<float> late (x.begin() + static_cast<long> (half), x.end());
+
+    double ea = 0.0, la = 0.0;
+    for (auto v : early) ea += std::abs (v);
+    for (auto v : late) la += std::abs (v);
+    CHECK (ea > la * 2.0);
+}
+
+TEST_CASE ("a noise oscillator obeys its own filter", "[engine]")
+{
+    auto bright = simplePatch (autosynth::Waveform::noise);
+    auto dark = bright;
+    dark.oscs[0].filterEnabled = true;
+    dark.oscs[0].filter.type = autosynth::FilterType::lowpass;
+    dark.oscs[0].filter.cutoffHz = 500.0f;
+    dark.oscs[0].filter.envAmount = 0.0f;
+
+    CHECK (meanCentroidHz (render (dark)) < meanCentroidHz (render (bright)) * 0.5);
+}
+
+TEST_CASE ("two noise oscillators are two sounds", "[engine]")
+{
+    // Sharing one generator would make them the same signal at double level,
+    // which is a chorus of one.
+    // Levels kept well clear of full scale: `render` peak-limits, and a limiter
+    // would flatten exactly the difference this is measuring.
+    auto single = simplePatch (autosynth::Waveform::noise);
+    single.masterLevel = 0.2f;
+    single.oscs[0].level = 0.4f;
+
+    auto pair = single;
+    pair.oscs[1] = pair.oscs[0];
+    pair.oscs[1].enabled = true;
+
+    const auto rms = [] (const std::vector<float>& x)
+    {
+        double acc = 0.0;
+        for (auto v : x)
+            acc += static_cast<double> (v) * v;
+        return std::sqrt (acc / juce::jmax<size_t> (x.size(), 1));
+    };
+
+    // Two independent streams add in power, so root two; two copies of one
+    // stream would add in amplitude and give exactly two.
+    const auto ratio = rms (render (pair)) / juce::jmax (rms (render (single)), 1.0e-9);
+    CHECK (ratio > 1.2);
+    CHECK (ratio < 1.8);
+}

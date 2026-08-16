@@ -11,10 +11,16 @@ reconstruction error" — a sampler already scores zero on that — it is
 ## What it does
 
 Drop a `.wav` onto the plugin. It analyses the sample in process, builds a
-patch, and plays it. Every parameter is a real knob and is host-automatable.
+patch, and plays it. Every control is a real knob and is host-automatable; the
+only thing that is not is the harmonic content of a fitted wavetable, which is
+drawn rather than dialled.
 
-- **3 oscillators**, each with its own waveform, tuning, unison, wavetable
-  morph, envelope, filter and reverb send
+- **3 oscillators**, each with its own tuning, unison, envelope, filter and
+  reverb send
+- **Every oscillator is a wavetable**, up to 16 frames of 16 harmonics, drawn
+  and edited as bars. A classic shape is a one-frame table nobody has drawn on
+  yet, so it keeps its full bandwidth; frames get drawn only when no shape can
+  describe the sound
 - **2 LFO slots**, so vibrato and tremolo can coexist rather than compete
 - Global filter with envelope, delay, and a shared reverb
 - Solo/mute per oscillator, A/B against the original, and a spectrum overlay
@@ -26,8 +32,11 @@ Working end to end as a VST3 and a standalone application. Analysis, synthesis
 and CMA-ES refinement all run natively — there is no Python at runtime and no
 Python in this repository.
 
-The weakest part is oscillator counting, at roughly 33% exact. Everything else
-is downstream of that, and it is where the work is going next.
+The weakest part is oscillator counting, at 70.8% exact against a ground-truth
+harness. Everything else is downstream of that, and it is where the work is
+going next: what is left is almost entirely *under*-counting, and the intervals
+say why — two oscillators an octave apart sharing an envelope are
+mathematically identical to one oscillator with a different waveform.
 
 Not started: exporters to other synths, stereo, and automatic reverb
 *detection* — the reverb exists and is editable, but recovering one from a

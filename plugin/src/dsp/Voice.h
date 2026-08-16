@@ -23,7 +23,8 @@ namespace autosynth
 class Voice
 {
 public:
-    void prepare (double sampleRate, const WaveTables* sharedTables);
+    void prepare (double sampleRate, const WaveTables* sharedTables,
+                  const std::array<WaveTables::FrameTables, kNumOsc>* oscFrameTables);
     void setPatch (const Patch& patch);
 
     // Monitoring gain per oscillator, from the editor's solo/mute buttons.
@@ -52,7 +53,11 @@ private:
         std::array<double, kMaxUnison> detuneRatio {};
         Envelope env;
         Envelope filterEnv;
+        Envelope frameEnv;
         Svf filter;
+        // Its own generator, seeded per oscillator, so two noise oscillators in
+        // one patch are two different sounds rather than one at double level.
+        juce::Random noise;
         int numVoices = 1;
         float gain = 0.0f;
         bool useEnv = false;
@@ -63,6 +68,9 @@ private:
 
     Patch patch {};
     const WaveTables* tables = nullptr;
+    // Owned by the Engine, one per oscillator slot: unlike the fixed tables
+    // these depend on the patch, so they cannot be shared across instruments.
+    const std::array<WaveTables::FrameTables, kNumOsc>* frameTables = nullptr;
     double sampleRate = 44100.0;
 
     std::array<OscState, kNumOsc> oscs {};
@@ -100,6 +108,22 @@ public:
 
     void render (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi);
 
+    using FrameTableSet = std::array<WaveTables::FrameTables, kNumOsc>;
+
+    // Builds the drawn-frame mipmaps for `p` without touching this engine.
+    //
+    // Exists so the caller can do the FFTs *before* taking whatever lock keeps
+    // the audio thread out, and then hand them over as a pointer swap. Built in
+    // place it measured 1.5 ms with three drawn frames, and the audio callback
+    // try-locks and outputs silence when it loses -- which turned dragging a
+    // harmonic bar into several dropped blocks a second.
+    static void buildFrameTables (const Patch& p, double sampleRate, FrameTableSet& out);
+
+    // Takes ownership of tables built by the call above. Cheap: a vector move
+    // per oscillator. Call it before `setPatch`, which will then find them
+    // already correct and do nothing.
+    void adoptFrameTables (FrameTableSet&& built);
+
     // Offline render of a single note, used by the headless renderer and the
     // conformance test. Mirrors `autosynth render`.
     void renderOffline (juce::AudioBuffer<float>& out, double noteHz,
@@ -108,8 +132,15 @@ public:
 private:
     void renderBlock (float* out, int numSamples);
 
+    void rebuildFrameTables();
+
     std::array<Voice, kMaxVoices> voices {};
     WaveTables tables;
+    // Rebuilt only when the frame data actually differs, which happens on patch
+    // load and analysis -- both off the audio thread. Automation changes
+    // scalars, never frames, so `setPatch` from a parameter callback costs a
+    // comparison and no allocation.
+    FrameTableSet frameTables {};
     // One delay for the whole instrument, not one per voice: a delay repeats
     // what came out of the mix, and per-voice copies would multiply the tail by
     // the polyphony.
