@@ -28,6 +28,8 @@
 //   autosynth_vital  patch.json theirs.wav
 //   autosynth_diff   ours.wav   theirs.wav
 
+#include "fit/PartialFit.h"
+#include "fit/Refine.h"
 #include "ir/Patch.h"
 #include "ir/VitalExport.h"
 
@@ -143,6 +145,30 @@ juce::MemoryBlock wrapAsVst3State (const juce::String& json)
     return wrapped;
 }
 
+std::vector<float> readMono (const juce::File& file, double& sampleRateOut)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr)
+        return {};
+
+    const auto numSamples = (int) reader->lengthInSamples;
+    juce::AudioBuffer<float> buffer ((int) reader->numChannels, juce::jmax (1, numSamples));
+    reader->read (&buffer, 0, numSamples, 0, true, true);
+
+    if (buffer.getNumChannels() > 1)
+    {
+        for (int ch = 1; ch < buffer.getNumChannels(); ++ch)
+            buffer.addFrom (0, 0, buffer, ch, 0, numSamples);
+        buffer.applyGain (0, 0, numSamples, 1.0f / buffer.getNumChannels());
+    }
+
+    sampleRateOut = reader->sampleRate;
+    const auto* data = buffer.getReadPointer (0);
+    return std::vector<float> (data, data + numSamples);
+}
+
 // The inverse, so --dump-state reports the preset the plugin is actually
 // holding rather than the container it arrived in.
 juce::String unwrapVst3State (const juce::MemoryBlock& raw)
@@ -191,7 +217,9 @@ int main (int argc, char* argv[])
         std::fprintf (stderr,
                       "usage: autosynth_vital <patch.json> <out.wav> "
                       "[--note hz] [--dur s] [--gate s] [--sr rate] "
-                      "[--plugin Vital.vst3] [--preset out.vital]\n");
+                      "[--plugin Vital.vst3] [--preset out.vital]\n"
+                      "       autosynth_vital <patch-out.json> <out.wav> "
+                      "--fit <target.wav> [--refine-evals n]\n");
         return 2;
     }
 
@@ -199,26 +227,41 @@ int main (int argc, char* argv[])
     const auto patchFile = cwd.getChildFile (positional[0]);
     const auto outFile = cwd.getChildFile (positional[1]);
 
-    juce::String error;
-    const auto patch = autosynth::Patch::fromFile (patchFile, &error);
-    if (error.isNotEmpty())
+    // With --fit the first argument is an output rather than an input: the
+    // target is fitted with Vital doing the rendering, and the patch it settles
+    // on is written there.
+    const auto fitPath = args.text ("--fit");
+    const auto fitting = fitPath.isNotEmpty();
+
+    std::vector<float> target;
+    auto sampleRate = args.value ("--sr", 48000.0);
+    autosynth::Patch patch;
+
+    if (fitting)
     {
-        std::fprintf (stderr, "error: %s\n", error.toRawUTF8());
-        return 1;
+        double targetRate = 0.0;
+        target = readMono (cwd.getChildFile (fitPath), targetRate);
+        if (target.empty())
+        {
+            std::fprintf (stderr, "error: cannot read %s\n", fitPath.toRawUTF8());
+            return 1;
+        }
+        // The target's own rate, so the loss compares like with like.
+        sampleRate = targetRate;
+    }
+    else
+    {
+        juce::String error;
+        patch = autosynth::Patch::fromFile (patchFile, &error);
+        if (error.isNotEmpty())
+        {
+            std::fprintf (stderr, "error: %s\n", error.toRawUTF8());
+            return 1;
+        }
     }
 
-    const auto sampleRate = args.value ("--sr", 48000.0);
     const auto duration = args.value ("--dur", 2.0);
     const auto gate = args.value ("--gate", 1.5);
-    const auto requestedHz = args.value ("--note", patch.rootHz);
-
-    // Vital is played, not tuned to a frequency: it gets a MIDI note. Rounding
-    // to the nearest one and reporting the exact frequency of *that* note is
-    // what makes this comparable with autosynth_render -- otherwise the diff
-    // reads up to half a semitone of pitch error that neither synth committed.
-    const auto midiNote = juce::jlimit (0, 127,
-        (int) std::lround (69.0 + 12.0 * std::log2 (requestedHz / 440.0)));
-    const auto renderedHz = 440.0 * std::pow (2.0, (midiNote - 69) / 12.0);
 
     const auto pluginFile = findVital (args.text ("--plugin"));
     if (pluginFile == juce::File() || ! pluginFile.exists())
@@ -264,26 +307,165 @@ int main (int argc, char* argv[])
     plugin->setNonRealtime (true);
     plugin->prepareToPlay (sampleRate, blockSize);
 
-    // The exporter's own output, handed straight to the plugin. Writing it to
-    // disk as well is optional and useful: the file that failed to load is the
-    // one worth looking at.
-    const auto presetJson = autosynth::VitalExport::toJson (patch, patch.name);
+    // Loading a preset, as its own step so it can be timed and repeated.
+    //
+    // The settle gives the plugin's message thread a turn, on the theory that
+    // loading might not be synchronous -- a wavetable could be built on an
+    // async update, and a console host that never dispatches would then render
+    // whatever was loaded before the state arrived.
+    //
+    // Measured, it is not needed: rendering the same patch at settles of 0, 10,
+    // 50, 100 and 200 ms gives five bit-identical files, and that includes the
+    // first load of each process, which is a cold load into a plugin still
+    // holding its init patch. So the load is synchronous and the wait was
+    // costing 200 ms per evaluation for nothing -- half the per-evaluation
+    // budget, which is what makes it worth knowing.
+    //
+    // The flag stays because the failure it guards against would be silent, and
+    // this is the knob to reach for if a future preset renders as the init
+    // patch. `--dump-state` is the other one.
+    const auto settleMs = (int) args.value ("--settle", 0.0);
+    const auto loadPreset = [&] (const autosynth::Patch& p)
+    {
+        const auto wrapped = wrapAsVst3State (autosynth::VitalExport::toJson (p, p.name));
+        plugin->setStateInformation (wrapped.getData(), (int) wrapped.getSize());
+        if (settleMs > 0)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (settleMs);
+        // Loading a preset can reallocate the engine; prepare again so it is
+        // configured for this rate whatever the state did.
+        plugin->prepareToPlay (sampleRate, blockSize);
+
+        // Flush what the last render left ringing.
+        //
+        // Without this, evaluation N begins inside evaluation N-1's reverb
+        // tail: rendering one patch six times gave renders differing by 0.035
+        // at the sample, which is exactly this patch's tail level and not a
+        // coincidence. Every candidate would have been scored against a
+        // different amount of the previous candidate's decay, which is a
+        // dependence on evaluation *order* -- the kind of thing that makes an
+        // optimiser's path irreproducible rather than merely noisy.
+        plugin->reset();
+    };
+
+    // One rendered note, which is both the deliverable and, when fitting, one
+    // evaluation of the objective.
+    //
+    // Vital is played rather than tuned to a frequency: it gets a MIDI note.
+    // Rounding to the nearest and reporting the exact frequency of *that* note
+    // is what makes the output comparable with autosynth_render -- otherwise
+    // the diff reads up to half a semitone of pitch error that neither synth
+    // committed.
+    const auto noteFor = [] (double hz)
+    {
+        return juce::jlimit (0, 127, (int) std::lround (69.0 + 12.0 * std::log2 (hz / 440.0)));
+    };
+
+    const auto renderPatch = [&] (const autosynth::Patch& p, double noteHz,
+                                  double dur, double gateSeconds)
+    {
+        loadPreset (p);
+
+        const auto midiNote = noteFor (noteHz);
+
+        // Reported latency is trimmed from the front rather than ignored,
+        // because the diff measures attack time and a few hundred samples of it
+        // is a measurable slower-attack verdict that nothing in the patch
+        // caused.
+        const auto latency = juce::jmax (0, plugin->getLatencySamples());
+        const auto wanted = (int) std::ceil (dur * sampleRate);
+        const auto total = wanted + latency;
+        const auto gateSample = (int) std::lround (gateSeconds * sampleRate) + latency;
+        const auto channels = juce::jmax (1, plugin->getTotalNumOutputChannels());
+
+        std::vector<float> collected ((size_t) total, 0.0f);
+        juce::AudioBuffer<float> block (channels, blockSize);
+        bool noteStarted = false, noteStopped = false;
+
+        for (int position = 0; position < total; position += blockSize)
+        {
+            const auto thisBlock = juce::jmin (blockSize, total - position);
+            block.clear();
+
+            juce::MidiBuffer midi;
+            if (! noteStarted && position + thisBlock > latency)
+            {
+                midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, 1.0f),
+                               juce::jmax (0, latency - position));
+                noteStarted = true;
+            }
+            if (! noteStopped && noteStarted && position + thisBlock > gateSample)
+            {
+                midi.addEvent (juce::MidiMessage::noteOff (1, midiNote),
+                               juce::jlimit (0, thisBlock - 1, gateSample - position));
+                noteStopped = true;
+            }
+
+            juce::AudioBuffer<float> view (block.getArrayOfWritePointers(), channels, 0, thisBlock);
+            plugin->processBlock (view, midi);
+
+            // Mono by averaging rather than taking the left channel: Vital's
+            // unison and its effects spread energy across the pair, and one
+            // channel of a stereo-spread patch is not the same signal.
+            for (int i = 0; i < thisBlock; ++i)
+            {
+                float sum = 0.0f;
+                for (int ch = 0; ch < channels; ++ch)
+                    sum += view.getSample (ch, i);
+                collected[(size_t) (position + i)] = sum / (float) channels;
+            }
+        }
+
+        return std::vector<float> (collected.begin() + latency, collected.begin() + latency + wanted);
+    };
+
+    // Fitting, with Vital as the renderer.
+    //
+    // This is the point of the whole exercise: analysis decides the structure
+    // as before, and refinement then lands the values against the synth that
+    // will actually play them. Every difference between this engine and Vital
+    // stops needing to be found and hand-corrected in the exporter, because the
+    // optimiser is measuring the real output.
+    if (fitting)
+    {
+        autosynth::PartialFit::Options fitOptions;
+        fitOptions.gateSeconds = gate;
+        patch = autosynth::PartialFit::fit (target.data(), (int) target.size(),
+                                            sampleRate, fitOptions);
+
+        autosynth::Refine::Options refineOptions;
+        refineOptions.maxEvaluations = (int) args.value ("--refine-evals", 192.0);
+        refineOptions.gateSeconds = gate;
+        refineOptions.renderer = [&] (const autosynth::Patch& candidate,
+                                      double dur, double gateSeconds)
+        {
+            return renderPatch (candidate, candidate.rootHz, dur, gateSeconds);
+        };
+
+        const auto started = juce::Time::getMillisecondCounterHiRes();
+        const auto refined = autosynth::Refine::run (patch, target.data(), (int) target.size(),
+                                                     sampleRate, refineOptions);
+        const auto elapsed = juce::Time::getMillisecondCounterHiRes() - started;
+
+        patch = refined.patch;
+        patchFile.replaceWithText (patch.toJson());
+
+        std::printf ("fitted %s through Vital: loss %.4f -> %.4f over %d evaluations "
+                     "in %.1f s -> %s\n",
+                     fitPath.toRawUTF8(), refined.initialLoss, refined.finalLoss,
+                     refined.evaluations, elapsed / 1000.0,
+                     patchFile.getFullPathName().toRawUTF8());
+    }
+
+    const auto requestedHz = args.value ("--note", patch.rootHz);
+    const auto midiNote = noteFor (requestedHz);
+    const auto renderedHz = 440.0 * std::pow (2.0, (midiNote - 69) / 12.0);
+
     const auto presetPath = args.text ("--preset");
     if (presetPath.isNotEmpty())
-        cwd.getChildFile (presetPath).replaceWithText (presetJson);
+        cwd.getChildFile (presetPath)
+            .replaceWithText (autosynth::VitalExport::toJson (patch, patch.name));
 
-    const auto wrapped = wrapAsVst3State (presetJson);
-    plugin->setStateInformation (wrapped.getData(), (int) wrapped.getSize());
-
-    // Give the plugin's message thread a turn before rendering. Loading a
-    // preset is not necessarily synchronous -- a wavetable can be built on an
-    // async update -- and a console host that never dispatches would render
-    // whatever was loaded before the state arrived.
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
-
-    // Loading a preset can reallocate the engine; prepare again so it is
-    // configured for this rate whatever the state did.
-    plugin->prepareToPlay (sampleRate, blockSize);
+    loadPreset (patch);
 
     // What the plugin thinks it is holding, which is the only way to tell a
     // preset that failed to load from one that loaded and sounds wrong. The
@@ -301,57 +483,63 @@ int main (int argc, char* argv[])
                      (int) state.getSize(), inner.length(), dumpPath.toRawUTF8());
     }
 
-    // Reported latency is trimmed from the front rather than ignored, because
-    // the diff measures attack time and a few hundred samples of it is a
-    // measurable slower-attack verdict that nothing in the patch caused.
-    const auto latency = juce::jmax (0, plugin->getLatencySamples());
-    const auto wanted = (int) std::ceil (duration * sampleRate);
-    const auto total = wanted + latency;
-    const auto gateSample = (int) std::lround (gate * sampleRate) + latency;
+    const auto rendered = renderPatch (patch, requestedHz, duration, gate);
 
-    const auto channels = juce::jmax (1, plugin->getTotalNumOutputChannels());
-    juce::AudioBuffer<float> collected (1, total);
-    collected.clear();
-
-    juce::AudioBuffer<float> block (channels, blockSize);
-    bool noteStarted = false, noteStopped = false;
-
-    for (int position = 0; position < total; position += blockSize)
+    // What one evaluation costs when this is the renderer inside refinement:
+    // the plugin loads once per fit, but the preset load and the render happen
+    // once per candidate. Reported separately because they are paid at
+    // different rates and only the second is irreducible.
+    const auto repeat = (int) args.value ("--repeat", 1.0);
+    if (repeat > 1)
     {
-        const auto thisBlock = juce::jmin (blockSize, total - position);
-        block.clear();
+        const auto clock = [] { return juce::Time::getMillisecondCounterHiRes(); };
 
-        juce::MidiBuffer midi;
-        if (! noteStarted && position + thisBlock > latency)
+        // Repeatability is measured alongside the cost, because an objective
+        // that returns a different number for the same patch is a worse problem
+        // than a slow one: CMA-ES would be reading noise as signal.
+        auto loadMs = 0.0, renderMs = 0.0, worstDrift = 0.0;
+        std::vector<float> previous;
+        for (int i = 0; i < repeat; ++i)
         {
-            midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, 1.0f),
-                           juce::jmax (0, latency - position));
-            noteStarted = true;
-        }
-        if (! noteStopped && noteStarted && position + thisBlock > gateSample)
-        {
-            midi.addEvent (juce::MidiMessage::noteOff (1, midiNote),
-                           juce::jlimit (0, thisBlock - 1, gateSample - position));
-            noteStopped = true;
+            const auto a = clock();
+            loadPreset (patch);
+            const auto b = clock();
+            const auto again = renderPatch (patch, requestedHz, duration, gate);
+            loadMs += b - a;
+            renderMs += clock() - b;
+
+            const auto worstAgainst = [&again] (const std::vector<float>& other)
+            {
+                auto worst = 0.0;
+                const auto n = juce::jmin (other.size(), again.size());
+                for (size_t s = 0; s < n; ++s)
+                    worst = juce::jmax (worst, (double) std::abs (other[s] - again[s]));
+                return worst;
+            };
+
+            const auto vsFirst = worstAgainst (rendered);
+            const auto vsPrevious = previous.empty() ? 0.0 : worstAgainst (previous);
+            std::printf ("  render %d: %.6f against the first, %.6f against the previous\n",
+                         i + 1, vsFirst, vsPrevious);
+            worstDrift = juce::jmax (worstDrift, vsPrevious);
+            previous = again;
         }
 
-        juce::AudioBuffer<float> view (block.getArrayOfWritePointers(), channels, 0, thisBlock);
-        plugin->processBlock (view, midi);
+        std::printf ("repeatability over %d renders of one patch: worst "
+                     "consecutive difference %.6f\n", repeat, worstDrift);
 
-        // Mono by averaging rather than taking the left channel: Vital's unison
-        // and its effects spread energy across the pair, and one channel of a
-        // stereo-spread patch is not the same signal.
-        for (int i = 0; i < thisBlock; ++i)
-        {
-            float sum = 0.0f;
-            for (int ch = 0; ch < channels; ++ch)
-                sum += view.getSample (ch, i);
-            collected.setSample (0, position + i, sum / (float) channels);
-        }
+        // The load is counted twice over -- renderPatch loads too -- so the
+        // render figure is the pair and the load figure is one of them.
+        std::printf ("timing over %d evaluations at settle %d ms:\n"
+                     "  preset load %7.1f ms each\n"
+                     "  load+render %7.1f ms each (%.2f s of audio)\n"
+                     "  one evaluation %7.1f ms -> %.1f s for 192\n",
+                     repeat, settleMs, loadMs / repeat, renderMs / repeat, duration,
+                     renderMs / repeat, renderMs / repeat * 192.0 / 1000.0);
     }
 
-    juce::AudioBuffer<float> buffer (1, wanted);
-    buffer.copyFrom (0, 0, collected, 0, latency, wanted);
+    juce::AudioBuffer<float> buffer (1, (int) rendered.size());
+    buffer.copyFrom (0, 0, rendered.data(), (int) rendered.size());
 
     plugin->releaseResources();
     plugin.reset();

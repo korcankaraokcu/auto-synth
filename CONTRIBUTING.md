@@ -781,6 +781,54 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### Refining against Vital, and what it cost to try
+
+The reason to render through Vital at all was never the diagnostics. It was to
+put Vital *inside* the refinement loop, so that the optimiser measures the synth
+the preset will be played by and every difference between the two engines stops
+needing to be found and hand-corrected in the exporter.
+
+`Refine::Options::renderer` is how: a callback that turns a candidate patch into
+mono samples, empty by default and meaning "the engine in this repository".
+Nothing in `autosynth_dsp` learns about plug-in hosting; the tool that owns a
+synth owns the renderer, and `autosynth_vital --fit target.wav` supplies one
+backed by Vital.
+
+**It costs about 90 s per fit** against 33 s through this engine, at 192
+evaluations. Per evaluation that is 300 ms, split roughly 150 ms of preset load
+and 150 ms of render for two seconds of audio, and the plug-in itself loads once
+rather than once per candidate.
+
+Two things had to be fixed before the number meant anything, and both were found
+by rendering one patch repeatedly and comparing the results, which is a cheaper
+question than "is the fit any good" and answers it first.
+
+**Vital randomises each note's starting phase.** Six renders of one patch
+differed by 0.391 at the sample, on a signal peaking at 0.22 -- more noise than
+signal, and an optimiser reading it would have been scoring the phase lottery
+rather than the parameters. This engine starts every oscillator at zero, so
+`osc_N_random_phase` is now exported off: a faithful translation that happens to
+make fitting possible.
+
+**Something still alternates.** With phase fixed the renders settle into two
+states, flipping every other render, 0.035 apart. Not a decaying tail -- a tail
+would fade rather than toggle -- and not the noise bed, which makes no
+difference when removed, and not cured by `reset()`. It is eleven times smaller
+than the phase problem and is left standing, named rather than guessed at.
+
+**And the result is honestly mixed.** Fitted through Vital and played by Vital,
+against the recording: amplitude wobble improves from 1.23 dB off to 0.89, and
+attack from 0.10 s off to 0.06. Timbre drift goes the other way, from 1.39 dB
+off to 2.69. Pitch and brightness are a wash. The final loss is 0.660 either
+way, which is the more telling number -- it was 0.6603 with the phase lottery
+running and 0.6600 without, so the noise that looked disqualifying was not what
+was limiting the fit.
+
+So: viable, affordable, and not yet demonstrated to be *better*. One sample is
+not a decision, and the honest next step is the recovery harness over many
+patches rather than another listen to the clarinet. What the experiment does
+settle is that the mechanism works and what it costs, which is what it was for.
+
 ### Noise as a waveform
 
 Two attempts to give the noise bed an envelope failed by bolting one on beside

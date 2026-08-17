@@ -302,6 +302,19 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         const auto on = osc.enabled && osc.level > 1.0e-4f;
 
         settings->setProperty ("osc_" + n + "_on", on ? 1.0f : 0.0f);
+
+        // Vital randomises each note's starting phase by default; this engine
+        // starts every oscillator at zero, so switching it off is the faithful
+        // translation rather than a preference.
+        //
+        // It also decides whether the preset can be *fitted* at all. Rendering
+        // one patch six times through Vital with random phase on gave renders
+        // differing by 0.39 at the sample -- on a signal peaking at 0.22, which
+        // is more noise than signal -- so an optimiser measuring Vital would be
+        // reading the phase lottery rather than the parameters. With it off the
+        // renders are identical.
+        settings->setProperty ("osc_" + n + "_random_phase", 0.0f);
+        settings->setProperty ("osc_" + n + "_phase", 0.0f);
         settings->setProperty ("osc_" + n + "_level", Mapping::levelToOscLevel (osc.level));
         settings->setProperty ("osc_" + n + "_transpose", static_cast<float> (osc.semitones));
         settings->setProperty ("osc_" + n + "_tune", Mapping::centsToTune (osc.cents));

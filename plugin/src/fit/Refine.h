@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ir/Patch.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,22 @@ public:
         double sigma = 0.12;
         unsigned seed = 1;
         double gateSeconds = -1.0;
+
+        // How a candidate patch becomes audio. Left empty, this uses the engine
+        // in this repository.
+        //
+        // It is a callback rather than a build-time choice so that nothing here
+        // has to know about plug-in hosting: the caller that owns a synth owns
+        // the renderer. That is what lets refinement optimise against the synth
+        // the preset will actually be played by, which removes a whole class of
+        // problem rather than solving it -- while the optimiser measures one
+        // engine and the file is played by another, every difference between
+        // them has to be found and hand-corrected in the exporter.
+        //
+        // Returns mono samples at the same rate as the target.
+        std::function<std::vector<float> (const Patch& candidate,
+                                          double durationSeconds,
+                                          double gateSeconds)> renderer;
     };
 
     struct Result

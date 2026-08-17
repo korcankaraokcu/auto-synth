@@ -655,6 +655,12 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
 
     const auto measure = [&] (const Patch& candidate)
     {
+        if (options.renderer)
+        {
+            const auto rendered = options.renderer (candidate, duration, gate);
+            return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate);
+        }
+
         engine.setPatch (candidate);
         juce::AudioBuffer<float> buffer;
         engine.renderOffline (buffer, candidate.rootHz, duration, gate);
