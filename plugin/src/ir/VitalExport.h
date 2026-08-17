@@ -76,6 +76,32 @@ public:
         // than 6 dB under it.
         static constexpr float kExportMakeupDb = 6.0f;
 
+        // Our reverb `level` is a return gain; Vital's `reverb_dry_wet` is a
+        // crossfade. This is the measured factor between them, and it is well
+        // above one because the return is applied *after* a comb bank with a
+        // considerable gain of its own, so a return of 0.1 is nothing like a
+        // mix of 0.1.
+        //
+        // Measured against the recordings rather than against this engine. One
+        // tenth of a second after the release, the tail of both source samples
+        // sits at about 0.21 of the sustained level -- 0.218 for the clarinet,
+        // 0.211 for the violin, which is closer agreement than expected from
+        // two unrelated instruments. Vital's tail rises very nearly linearly
+        // with the crossfade, so the crossfade that lands on 0.21 is what this
+        // multiplies our return gain to reach.
+        static constexpr float kReverbReturnToRatio = 8.0f;
+
+        // Vital's reverb rings about twice as long as the decay time it is
+        // given, so the time it is given is half the one that was fitted.
+        //
+        // Measured by exporting the same patch at room sizes of 0.0, 0.3 and
+        // 0.6 -- asking for 0.61 s, 0.89 s and 1.52 s -- and measuring the
+        // rendered decay at 1.19 s, 1.75 s and 3.42 s. That is 1.96x, 1.97x and
+        // 2.24x, stable enough across a factor of three to be a convention
+        // rather than a coincidence. A fourth point at 0.9 was discarded: the
+        // tail had not fallen far enough inside the render to measure.
+        static constexpr float kReverbDecayCorrection = 0.5f;
+
         // Oscillator level is *quadratic*: the amplitude is the square of the
         // stored value, and its default of 0.70710678 is exactly the value that
         // renders as a half. Written linearly, a level of 0.3 arrived as 0.09.

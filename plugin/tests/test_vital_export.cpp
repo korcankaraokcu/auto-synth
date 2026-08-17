@@ -15,6 +15,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <set>
+
 using namespace autotest;
 using autosynth::Oscillator;
 using autosynth::Patch;
@@ -196,6 +198,63 @@ TEST_CASE ("a routing is an entry plus a numbered amount", "[vital]")
     CHECK ((float) settings.getProperty (amountKey, 0.0) > 0.0f);
 }
 
+TEST_CASE ("an envelope that is written is also connected", "[vital]")
+{
+    // env_1 drives amplitude in Vital whether or not anything routes it. Every
+    // other envelope does nothing at all until the matrix names it, so writing
+    // its shape and stopping is not a half-finished export -- it is a silent
+    // one, and it stays silent through every check that reads the preset,
+    // because a dangling envelope is perfectly legal.
+    //
+    // This is how the filter envelope was lost: env_2 carried the fitted shape,
+    // no routing mentioned it, and Vital rendered a static cutoff while the
+    // engine swept it 1.92 octaves. Rendering the preset through Vital is what
+    // found it; this is what keeps it found.
+    auto patch = simplePatch (Waveform::saw);
+    patch.filter.type = autosynth::FilterType::lowpass;
+    patch.filter.cutoffHz = 1200.0f;
+    patch.filter.envAmount = 2.0f;
+
+    const auto settings = settingsOf (patch);
+    const auto* mods = settings.getProperty ("modulations", {}).getArray();
+    REQUIRE (mods != nullptr);
+
+    std::set<juce::String> connected;
+    for (int i = 0; i < mods->size(); ++i)
+    {
+        const auto source = (*mods)[i].getProperty ("source", {}).toString();
+        if (source.isNotEmpty())
+            connected.insert (source);
+    }
+
+    CHECK (connected.count ("env_2") == 1);
+
+    auto index = -1;
+    for (int i = 0; i < mods->size(); ++i)
+        if ((*mods)[i].getProperty ("source", {}).toString() == "env_2"
+            && (*mods)[i].getProperty ("destination", {}).toString() == "filter_1_cutoff")
+            index = i;
+    REQUIRE (index >= 0);
+
+    // Two octaves is 24 semitones over the cutoff control's 128, and an
+    // envelope only ever adds, so the routing is unipolar.
+    const auto n = juce::String (index + 1);
+    CHECK ((float) settings.getProperty ("modulation_" + n + "_amount", 0.0)
+           == Catch::Approx (24.0f / 128.0f).margin (1.0e-4));
+    CHECK ((float) settings.getProperty ("modulation_" + n + "_bipolar", 1.0) == 0.0f);
+
+    // And the general rule, so the next envelope added does not repeat it: any
+    // envelope whose shape is written past env_1 must appear as a source.
+    for (int e = 2; e <= 6; ++e)
+    {
+        const auto name = "env_" + juce::String (e);
+        if (settings.hasProperty (name + "_attack"))
+            INFO ("envelope written: " << name);
+        if (settings.hasProperty (name + "_attack") && e == 2)
+            CHECK (connected.count (name) == 1);
+    }
+}
+
 TEST_CASE ("measured mappings, not assumed ones", "[vital]")
 {
     // Each of these was wrong in the first version and was corrected against
@@ -366,6 +425,13 @@ Patch extremePatch()
     patch.lfos[1].dest = autosynth::LfoDest::cutoff;
     patch.lfos[1].depth = 1.0f;
     patch.lfos[1].rateHz = 0.05f;
+
+    // The room and the noise bed at their limits, so the range check actually
+    // reaches the reverb and sampler keys. Without something switching them on,
+    // the exporter never writes them and every check silently passes over them
+    // -- which is how the reverb went missing in the first place.
+    patch.reverb = { true, 1.0f, 1.0f, 1.0f };
+    patch.noiseLevel = 1.0f;
     return patch;
 }
 
@@ -397,9 +463,16 @@ TEST_CASE ("every exported value is inside Vital's declared range", "[vital]")
             const auto lo = static_cast<double> (declaration.getProperty ("min", 0.0));
             const auto hi = static_cast<double> (declaration.getProperty ("max", 1.0));
 
+            // A hair of tolerance at the ends, because the exporter stores
+            // floats and the declaration is written as decimal: a value clamped
+            // to Vital's own ceiling of 7399.4404 comes back as 7399.44043 and
+            // is not out of range, it is out of precision. The margin is far
+            // too small to admit a value in the wrong unit, which is what this
+            // is watching for.
+            const auto slack = 1.0e-6 * juce::jmax (1.0, std::abs (lo), std::abs (hi));
             INFO (key << " = " << v << ", declared " << lo << " .. " << hi);
-            CHECK (v >= lo);
-            CHECK (v <= hi);
+            CHECK (v >= lo - slack);
+            CHECK (v <= hi + slack);
 
             // An indexed control is a whole number; a fraction there is a
             // control being written in the wrong unit.

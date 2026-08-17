@@ -1,5 +1,6 @@
 #include "ir/VitalExport.h"
 
+#include "dsp/Reverb.h"
 #include "dsp/Tables.h"
 
 #include <cmath>
@@ -176,20 +177,47 @@ juce::var defaultLfoShapes()
     return juce::var (lfos);
 }
 
-// A silent stub. The sampler is off in everything this exports, but the block
-// has to exist and has to decode: measured against real presets, `samples` is
-// base64 of little-endian 16-bit -- 44100 frames arrive as 88200 bytes.
-juce::var silentSample()
+// The sample block. Measured against real presets, `samples` is base64 of
+// little-endian 16-bit -- 44100 frames arrive as 88200 bytes.
+//
+// It has to exist and has to decode even when unused, because Vital's loader
+// reads it directly. When the patch has a noise bed it stops being a stub and
+// becomes the noise: Vital's oscillators are wavetables and have no noise mode,
+// so the sampler is the only continuous broadband source it owns. Rendering
+// through Vital measured the cost of leaving it silent -- the violin's noise
+// read 0.171 in this engine and 0.048 in Vital, which is most of what "it
+// sounds a bit different" was.
+//
+// One second, looped. The loop is inaudible because the content is noise, and a
+// fixed seed keeps the export reproducible -- an exporter that emits different
+// bytes each run cannot have a golden fixture.
+juce::var sampleBlock (bool withNoise)
 {
-    constexpr int frames = 8;
+    constexpr int silentFrames = 8;
+    constexpr int noiseRate = 44100;
+    const auto frames = withNoise ? noiseRate : silentFrames;
+
     juce::MemoryOutputStream raw;
-    for (int i = 0; i < frames; ++i)
-        raw.writeShort (0);
+    if (withNoise)
+    {
+        // Uniform rather than Gaussian, and full scale, to match the engine's
+        // own generator: it adds `noise * level` with noise uniform on [-1, 1],
+        // so the amplitude asked for is the amplitude that arrives.
+        juce::Random random (0x5eed);
+        for (int i = 0; i < frames; ++i)
+            raw.writeShort ((short) juce::jlimit (-32767, 32767,
+                                                  (int) (random.nextFloat() * 65534.0f) - 32767));
+    }
+    else
+    {
+        for (int i = 0; i < frames; ++i)
+            raw.writeShort (0);
+    }
 
     auto* sample = new juce::DynamicObject();
-    sample->setProperty ("name", "Init");
+    sample->setProperty ("name", withNoise ? "autosynth noise" : "Init");
     sample->setProperty ("length", frames);
-    sample->setProperty ("sample_rate", 44100);
+    sample->setProperty ("sample_rate", noiseRate);
     sample->setProperty ("samples", juce::Base64::toBase64 (raw.getData(), raw.getDataSize()));
     return juce::var (sample);
 }
@@ -258,7 +286,11 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
 {
     auto* settings = new juce::DynamicObject();
 
-    settings->setProperty ("volume", Mapping::gainToVolume (patch.masterLevel));
+    // Written at the end, once the reverb crossfade is known: matching this
+    // engine's reverb *send* with Vital's dry/wet means giving the master back
+    // whatever the crossfade took off the dry.
+    auto reverbWet = 0.0f;
+
     settings->setProperty ("polyphony", 8);
     settings->setProperty ("voice_transpose", 0);
 
@@ -306,6 +338,23 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     }
 
     std::vector<Routing> routings;
+
+    // The filter envelope, which was written and then left dangling: env_2 held
+    // the right shape and nothing connected it to anything, so every export
+    // rendered a static cutoff while the fit swept it. On the clarinet that is
+    // 1.92 octaves of missing brightness, and it read as harmonics two to eight
+    // sitting 3 to 13 dB low -- a difference no amount of reading the preset
+    // would have shown, because the preset was legal.
+    //
+    // Scaled like the LFO route below: octaves to semitones, over the cutoff
+    // parameter's own span of 128. Unipolar, because an ADSR in Vital runs zero
+    // to one and ours is added to the cutoff rather than swung around it.
+    if (patch.filter.type != FilterType::off && std::abs (patch.filter.envAmount) > 1.0e-4f)
+        routings.push_back ({ "env_2", "filter_1_cutoff",
+                              juce::jlimit (-1.0f, 1.0f,
+                                            patch.filter.envAmount * 12.0f / 128.0f),
+                              false });
+
     for (int i = 0; i < kNumLfo; ++i)
     {
         const auto& lfo = patch.lfos[static_cast<size_t> (i)];
@@ -373,7 +422,74 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     }
     settings->setProperty ("modulations", juce::var (modulations));
     settings->setProperty ("lfos", defaultLfoShapes());
-    settings->setProperty ("sample", silentSample());
+
+    // The noise bed, as the sampler.
+    //
+    // Routed to filter 1 rather than left on Vital's default of the effects
+    // bus: this engine adds noise into the mix *before* the filter, so an
+    // unfiltered noise bed is a different sound -- brighter, and unaffected by
+    // the filter envelope that shapes everything else.
+    // The room.
+    //
+    // Dropping this was the last thing that made an exported preset stop
+    // sounding like the fit, and the most obvious once heard: the note simply
+    // ended. Both library patches carry a reverb at a return gain around 0.1
+    // and an RT60 near a second, and the exported preset went to digital
+    // silence 50 ms after note-off, because the fitted amplitude release is
+    // 5 ms and the tail it was fitted alongside was never written.
+    //
+    // Vital states the tail as a decay time in seconds where ours states a room
+    // size, so the size goes back through the reverb's own RT60 relation rather
+    // than being copied across as if the two controls meant the same thing.
+    // `reverb_size` is left at its default for the same reason: it scales the
+    // delay lines here, and putting the size in both places would count the
+    // tail twice.
+    const auto reverbOn = patch.reverb.enabled && patch.reverb.level > 1.0e-4f;
+    settings->setProperty ("reverb_on", reverbOn ? 1.0f : 0.0f);
+    if (reverbOn)
+    {
+        // Ours is a return gain *added* to the dry; Vital's is a crossfade, and
+        // the return is applied after a comb bank with a large gain of its own.
+        // Writing the return gain straight in as a mix left the tail 14 dB
+        // under the source recording -- present in the file, inaudible in the
+        // room -- so the two are related by a measured factor rather than
+        // treated as the same quantity.
+        const auto ratio = juce::jlimit (0.0f, 9.0f,
+                                         Mapping::kReverbReturnToRatio * patch.reverb.level);
+        reverbWet = ratio / (1.0f + ratio);
+        settings->setProperty ("reverb_dry_wet", juce::jlimit (0.0f, 1.0f, reverbWet));
+
+        const auto rt60 = Reverb::rt60ForSize (patch.reverb.size)
+                        * Mapping::kReverbDecayCorrection;
+        settings->setProperty ("reverb_decay_time",
+                               juce::jlimit (-6.0f, 6.0f,
+                                             (float) std::log2 (juce::jmax (1.0e-3, rt60))));
+
+        // Damping is a one-pole lowpass on our tail and a high shelf on
+        // Vital's, so this is a match in direction and rough degree rather than
+        // in filter shape. Both library patches sit near zero damping, so the
+        // approximation is not currently carrying any weight.
+        settings->setProperty ("reverb_high_shelf_gain",
+                               juce::jlimit (-6.0f, 0.0f, -6.0f * patch.reverb.damp));
+    }
+
+    // Written here rather than at the top only because the reverb decides how
+    // much of the dry Vital keeps. At these mix levels the crossfade takes
+    // well under a decibel, and compensating for it was measured to overshoot:
+    // Vital's dry falls far more slowly than `1 - wet`, so undoing that much
+    // put the whole patch several decibels over this engine.
+    settings->setProperty ("volume", Mapping::gainToVolume (patch.masterLevel));
+
+    const auto hasNoise = patch.noiseLevel > 1.0e-4f;
+    settings->setProperty ("sample", sampleBlock (hasNoise));
+    settings->setProperty ("sample_on", hasNoise ? 1.0f : 0.0f);
+    if (hasNoise)
+    {
+        settings->setProperty ("sample_level", Mapping::levelToOscLevel (patch.noiseLevel));
+        settings->setProperty ("sample_destination", 0.0f);   // filter 1
+        settings->setProperty ("sample_keytrack", 0.0f);      // noise has no pitch to track
+        settings->setProperty ("sample_loop", 1.0f);
+    }
 
     auto* root = new juce::DynamicObject();
     root->setProperty ("synth_version", Mapping::kSynthVersion);

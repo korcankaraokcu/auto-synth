@@ -37,5 +37,16 @@
   "bipolar":         { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
   "bypass":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
   "power":           { "min": -10.0, "max": 10.0, "default": 0.0, "post_offset": 0.0, "scale": "kLinear",  "units": "" },
-  "stereo":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" }
+  "stereo":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
+
+  "reverb_on":              { "min": 0.0,  "max": 1.0, "default": 0.0,  "post_offset": 0.0, "scale": "kIndexed",     "units": "" },
+  "reverb_dry_wet":         { "min": 0.0,  "max": 1.0, "default": 0.25, "post_offset": 0.0, "scale": "kLinear",      "units": "%" },
+  "reverb_decay_time":      { "min": -6.0, "max": 6.0, "default": 0.0,  "post_offset": 0.0, "scale": "kExponential", "units": " secs" },
+  "reverb_high_shelf_gain": { "min": -6.0, "max": 0.0, "default": -1.0, "post_offset": 0.0, "scale": "kLinear",      "units": " dB" },
+
+  "sample_on":          { "min": 0.0, "max": 1.0,  "default": 0.0,        "post_offset": 0.0, "scale": "kIndexed",   "units": "" },
+  "sample_level":       { "min": 0.0, "max": 1.0,  "default": 0.70710678, "post_offset": 0.0, "scale": "kQuadratic", "units": "" },
+  "sample_destination": { "min": 0.0, "max": 14.0, "default": 3.0,        "post_offset": 0.0, "scale": "kIndexed",   "units": "" },
+  "sample_keytrack":    { "min": 0.0, "max": 1.0,  "default": 0.0,        "post_offset": 0.0, "scale": "kIndexed",   "units": "" },
+  "sample_loop":        { "min": 0.0, "max": 1.0,  "default": 1.0,        "post_offset": 0.0, "scale": "kIndexed",   "units": "" }
 }

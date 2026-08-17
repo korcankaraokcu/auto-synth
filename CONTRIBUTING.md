@@ -52,8 +52,21 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 | `autosynth_tests` | The test suite |
 | `autosynth_render` | Headless renderer — patch JSON in, WAV out |
 | `autosynth_probe` | Analysis probe — WAV in, every intermediate stage out as JSON |
+| `autosynth_diff` | A/B diagnosis — two WAVs in, the difference on named axes out |
 | `autosynth_eval` | Ground-truth recovery harness — how good is the fitter? |
+| `autosynth_vital` | Renders a patch through the installed Vital VST3 — measures the export gap |
 | `install_plugin` | Copies the VST3 to the per-user plug-in folder |
+
+`autosynth_vital` needs Vital installed and links none of its code; it hosts
+whatever is at `C:\Program Files\Common Files\VST3\Vital.vst3` unless
+`--plugin` says otherwise. That is deliberate — it renders the version the
+presets will actually be opened in. The export gap is then an ordinary diff:
+
+```
+autosynth_render patch.json ours.wav --note 440
+autosynth_vital  patch.json theirs.wav
+autosynth_diff   ours.wav   theirs.wav
+```
 
 ### Known build traps
 
@@ -600,12 +613,165 @@ exporter has actually made was a legal-looking number that sat outside or askew
 of a declaration, and all of them would now fail without a build of Vital, a
 listener, or a round trip through a person.
 
-**What remains** is whether it sounds right, which is still a listening test. What can be said is that every settings key the
-exporter writes appears in real 1.0.7 presets {d} it invents nothing {d} and that
-`test_vital_export.cpp` decodes the base64 back to samples and projects them onto
-the sines that went in: a frame asking for a fundamental and a half-amplitude
-third harmonic comes back with exactly that and nothing on the second, and an
-undrawn square comes back as odd harmonics falling as 1/k.
+Every settings key the exporter writes appears in real 1.0.7 presets {d} it
+invents nothing {d} and `test_vital_export.cpp` decodes the base64 back to
+samples and projects them onto the sines that went in: a frame asking for a
+fundamental and a half-amplitude third harmonic comes back with exactly that and
+nothing on the second, and an undrawn square comes back as odd harmonics falling
+as 1/k.
+
+### Rendering through Vital, and the three things it found
+
+Everything above checks the preset on *this* side of the boundary. None of it
+could answer whether the preset sounds like the fit, because answering that
+needs the other synth {d} and the gap is structural rather than incidental:
+refinement optimises against this engine and the file is then played by a
+different one.
+
+`autosynth_vital` hosts the installed VST3 and renders the exported preset, so
+the gap becomes an ordinary `autosynth_diff`. It links no Vital code and ships
+none. It renders whichever build is installed, which is also the build the
+presets will be opened in {d} a submodule would render the public source drop,
+which is not necessarily the same engine.
+
+**The handover was wrong first, and reported success.** Vital's *plugin* state
+chunk is the preset JSON {d} `getStateInformation` calls the same
+`LoadSave::stateToJson` that writes a `.vital` file {d} so the exported text was
+handed straight to `setStateInformation`. A *hosted* plugin's chunk is not that:
+JUCE's VST3 host wraps the component and controller states as base64 inside an
+XML document, and its `setStateInformation` does nothing at all when handed
+anything else. `getXmlFromBinary` returns null and there is no error path. Vital
+kept its init patch and rendered happily.
+
+What caught it was the diff, not the tool: the harmonic profile came back 0.0,
+-5.8, -9.5, -12.1, -14.0, -15.5, -16.7, -18.1 against the fundamental, which is
+a mathematically exact sawtooth, with an instant attack and no modulation. That
+is Vital's init patch and nothing else. A preset that fails to load and a preset
+that loads and sounds wrong are indistinguishable from the audio alone unless
+you recognise the default. `--dump-state` now reads the state back out, so the
+question is answerable directly rather than by recognition.
+
+Once it loaded, two real defects surfaced immediately, and both had been
+invisible to every check that reads the preset, because both produce a perfectly
+legal file:
+
+**The filter envelope was never connected.** `env_2` was written with the
+fitted shape and no routing mentioned it. Vital rendered a static cutoff while
+the engine swept it 1.92 octaves, which read as harmonics two to eight sitting 3
+to 13 dB low and the brightness 0.41 octaves dull. A dangling modulator is
+silent, not wrong-looking. `test_vital_export.cpp` now asserts that an envelope
+past `env_1` appears as a modulation source {d} `env_1` drives amplitude whether
+or not anything routes it, every other envelope does nothing until the matrix
+names it.
+
+**The noise bed had nowhere to go.** Vital's oscillators are wavetables and have
+no noise mode, so noise had simply been dropped: the violin measured 0.171 in
+this engine and 0.048 in Vital. The sampler is the only continuous broadband
+source Vital owns, and the block was already there as a silent stub for the
+loader's benefit. It now carries one second of uniform full-scale noise, looped,
+from a fixed seed so the export stays reproducible, routed to filter 1 rather
+than Vital's default of the effects bus {d} this engine adds noise into the mix
+*before* the filter, so an unfiltered bed is a different sound. Uniform rather
+than Gaussian to match the engine's own generator, so the amplitude asked for is
+the amplitude that arrives.
+
+**And the room was never written.** The most audible of the three and the last
+found, because the first renders stopped at two seconds with note-off at one and
+a half, which is not long enough for a tail to be conspicuous by its absence.
+Heard rather than measured: the exported preset went to digital silence 50 ms
+after note-off. The fitted amplitude release is 5 ms, so the dry signal *should*
+stop dead {d} everything after it is reverb, and the exporter wrote no reverb at
+all. Both library patches carry one at a return gain near 0.1 and an RT60 near a
+second.
+
+Vital states a tail as a decay time in seconds where this engine states a room
+size, so the size goes back through the reverb's own RT60 relation rather than
+being copied across as though the two controls meant the same thing. That
+relation now lives on `Reverb` rather than in the fitter, because two callers
+need it from opposite directions: the fitter picks a size from a measured tail,
+and the exporter has to restate that tail in another synth's units.
+
+**Two numbers had to be measured rather than translated**, and getting the first
+of them wrong is the part worth recording.
+
+Our reverb `level` is a return gain added to the dry; Vital's `reverb_dry_wet`
+is a crossfade. Writing one in as the other left a tail 14 dB under the source,
+which is present in the file and inaudible in the room {d} and that is exactly
+how it was reported: not "the reverb is quiet" but "there is silence after the
+first second". A return gain of 0.1 is nothing like a mix of 0.1, because the
+return is applied *after* a comb bank with a large gain of its own. The two are
+now related by a measured factor of eight.
+
+That factor was found, discarded, and reinstated. It was discarded because a
+check against the recording appeared to show this engine's tail sitting three
+times louder than the source, which would have made the engine the outlier and
+the quiet export nearly right. That check was wrong: it measured the envelope in
+167 ms slices, which straddles the release and smears the very transition being
+measured. Redone at 20 ms with the release located first, the recordings sit at
+0.218 and 0.211 of their sustain a tenth of a second after release, this engine
+at 0.236 and 0.133, and the unscaled export at 0.042 and 0.039. The engine
+agrees with the recordings; the export was the outlier all along.
+
+The lesson is not about reverb. A measurement fine enough to see the thing you
+are asking about is a precondition for the answer meaning anything, and an
+envelope window wider than the event will always report the average of before
+and after with total confidence. It briefly produced a *documented* wrong
+conclusion here, which is worse than no conclusion.
+
+The second number is the decay time. Vital rings about twice as long as the time
+it is given: asked for 0.61 s, 0.89 s and 1.52 s it renders 1.19 s, 1.75 s and
+3.42 s, a ratio of 1.96, 1.97 and 2.24 across a factor of three in the input.
+Stable enough to be a convention rather than a coincidence, so the exporter
+halves the fitted time on the way out.
+
+A smaller question settled in passing: Vital's dry/wet reduces the dry far more
+slowly than `1 - wet`, so compensating for the crossfade as though it were
+linear puts the whole patch several decibels over. At these mix levels the loss
+is under a decibel and is left alone.
+
+All three fixes were verified by measurement rather than by reasoning, which is
+the point of having the loop at all. Against this engine's render of the same
+patch:
+
+| | before | after |
+|---|---|---|
+| violin noisiness | 0.048 vs 0.171 | 0.178 vs 0.171 |
+| violin brightness | 0.29 oct dull | ok |
+| violin harmonics 2-8 | within 3.3 dB | within 3.3 dB |
+| clarinet brightness | 0.41 oct dull | ok |
+| clarinet harmonics 2-8 | up to 12.7 dB low | up to 7.6 dB low |
+| clarinet tail 100 ms after release | digital silence | 0.170 of sustain, against 0.218 in the recording |
+| violin tail 100 ms after release | digital silence | 0.151 of sustain, against 0.211 in the recording |
+
+Both instruments now land inside tolerance on pitch, noisiness, attack,
+note-off, vibrato and level; the violin on every axis the diff reports.
+When rendering to listen, hold the note as long as the source does and give the
+tail room: `--dur 4 --gate 3` for these two, whose recordings release at 3.00 s.
+The defaults gate at 1.5 s in 2 s, which is right for a diff and wrong for an
+ear {d} a one-second tail does not fit in it, and half a second of held note is
+not long enough to hear whether the sustain sits where the recording's does.
+
+What remains is *not* a transfer bug {d} every setting written survives the round
+trip byte-exact, and the wavetables arrive with the right keyframe counts:
+
+- **Amplitude modulation is about 1 dB shallow.** `osc_N_level` is quadratic and
+  the modulation clips at 1.0, so a level of 0.947 with an amount of 0.297 has
+  no room to swing upward and loses half its excursion. Giving it headroom means
+  moving gain to the master, which is a decision about staging rather than a
+  bug fix.
+- **Delay is still not exported.** Neither library patch enables it, so it has
+  never been exercised; `delay_*` maps as straightforwardly as the reverb did.
+
+**On the dependency.** Vital's source is GPLv3 and this project is
+GPL-3.0-or-later, so there is no licence obstacle to linking it; an earlier note
+here suggesting otherwise was simply wrong. What is *not* GPL is the factory
+preset library, which is separately licensed and must not be redistributed, and
+the name, which GPLv3 §7(e) explicitly allows an author to withhold {d} GPL
+builds are conventionally called Vitalium. Upstream is frozen (last code change
+2022, README edits since) and takes no pull requests, so the fork at
+`korcankaraokcu/vital`, pinned at `636ca0e`, is the insurance policy. Hosting
+the installed plugin needs none of it: loading a plugin at runtime is not
+distribution, and no Vital code enters this build.
 
 **On versions.** The preset declares 1.0.7, and the format has been additive
 across every version on hand: comparing 0.6, 0.8, 0.9 and 1.0 presets, no
@@ -1571,6 +1737,15 @@ waits until after the exporter.
   own attack and its own brightness. That costs an oscillator slot and has to
   beat the global bed on merit, so it needs the same kind of parsimony rule as
   the wavetable ladder.
+
+- **The violin's reverb decay is fitted too long.** A tenth of a second after
+  release the recording's tail is at 0.211 of its sustain and three tenths later
+  it is at 0.011 {d} a drop of 26 dB in 0.2 s, an RT60 near half a second. The
+  fit chose 1.45 s, and the engine duly renders 0.133 falling only to 0.037. The
+  clarinet is fine on the same measurement (1.16 s fitted against 1.21 s
+  measured), so this is not a broken relation, it is `detectReverb` reading a
+  fast-decaying tail as a slow one on material that is itself noisy. Noticed
+  while calibrating the Vital exporter against the recordings.
 
 ### Known limitations, all currently unhandled
 

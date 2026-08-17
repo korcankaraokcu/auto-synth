@@ -31,6 +31,46 @@ public:
     static constexpr float kAllpassGain = 0.5f;
     static constexpr double kReferenceSampleRate = 44100.0;
 
+    // Mean comb delay in seconds. The tunings are given at 44100 Hz and scaled
+    // by sample rate on prepare, so the delay in *time* is constant.
+    static constexpr double meanCombSeconds() noexcept
+    {
+        double sum = 0.0;
+        for (const auto d : kCombDelays)
+            sum += d;
+        return sum / kCombDelays.size() / kReferenceSampleRate;
+    }
+
+    // The RT60 a room size produces, and its inverse.
+    //
+    // These live with the reverb rather than with the fitter because they are
+    // facts about *this* reverb, and two callers now need them from opposite
+    // directions: the fitter picks a size from a measured tail, and the Vital
+    // exporter has to state the same tail in another synth's units, where the
+    // control is a decay time in seconds rather than a room size.
+    static double rt60ForSize (double size) noexcept
+    {
+        const auto feedback = juce::jlimit (0.0, 0.98, 0.7 + 0.28 * size);
+        if (feedback <= 0.0 || feedback >= 1.0)
+            return 0.0;   // caller decides what an unbounded tail means
+
+        // Each pass round a comb multiplies by `feedback` and takes one mean
+        // comb delay, so the tail falls -20*log10(feedback) dB every pass.
+        const auto dbPerPass = -20.0 * std::log10 (feedback);
+        if (dbPerPass <= 1.0e-9)
+            return 0.0;
+        return 60.0 * meanCombSeconds() / dbPerPass;
+    }
+
+    static double sizeForRt60 (double rt60Seconds) noexcept
+    {
+        if (rt60Seconds <= 0.0)
+            return 0.0;
+        // Inverse of the above: f = 10^(-3D/RT60).
+        const auto feedback = std::pow (10.0, -3.0 * meanCombSeconds() / rt60Seconds);
+        return juce::jlimit (0.0, 1.0, (feedback - 0.7) / 0.28);
+    }
+
     void prepare (double sr)
     {
         sampleRate = sr;

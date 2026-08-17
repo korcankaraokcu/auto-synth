@@ -159,6 +159,40 @@ target_link_libraries(autosynth_eval
     PUBLIC juce::juce_recommended_config_flags)
 
 # --------------------------------------------------------------------------
+# Render a patch through Vital itself.
+#
+# The exporter could be checked for legality but not for sound: refinement
+# optimises against this engine and the preset is played by a different one, so
+# "the export sounds a bit different" was a report with no measurement behind
+# it. This hosts the installed VST3 and hands it the exported JSON directly --
+# Vital's plugin state chunk is the preset format -- which makes the gap a
+# number that autosynth_diff can report.
+#
+# It links no Vital code and ships none: the plugin is whatever the user has
+# installed, which is also the version their presets will be opened in.
+# --------------------------------------------------------------------------
+juce_add_console_app(autosynth_vital PRODUCT_NAME "autosynth_vital")
+target_sources(autosynth_vital PRIVATE tools/vital_main.cpp)
+target_compile_definitions(autosynth_vital PRIVATE
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_VST=0
+    JUCE_PLUGINHOST_AU=0
+    JUCE_PLUGINHOST_LV2=0
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    # Needed to pump the message loop between loading a preset and rendering:
+    # a hosted plugin may finish loading on an async update, which never runs
+    # in a console app that only calls processBlock.
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(autosynth_vital
+    PRIVATE autosynth_dsp
+            juce::juce_audio_processors
+            juce::juce_audio_formats
+            juce::juce_gui_basics
+            juce::juce_events
+    PUBLIC juce::juce_recommended_config_flags)
+
+# --------------------------------------------------------------------------
 # Tests
 #
 # Built on Catch2, fetched and pinned the same way JUCE is. Enabled by default

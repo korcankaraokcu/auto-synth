@@ -1,6 +1,7 @@
 #include "fit/EffectsFit.h"
 
 #include "analysis/Stft.h"
+#include "dsp/Reverb.h"
 #include "fit/NdFilters.h"
 
 #include <algorithm>
@@ -171,32 +172,19 @@ EffectsFit::DelayEstimate EffectsFit::detectDelay (const float* samples, int num
     return estimate;
 }
 
-// Mean comb delay in dsp/Reverb.h, in seconds. The tunings are specified at
-// 44100 Hz and scaled by sample rate, so the delay in *time* is constant.
-constexpr double kMeanCombSeconds = 1378.0 / 44100.0;
-
+// The conversion itself now lives on Reverb, because it is a fact about that
+// reverb rather than about fitting, and the Vital exporter needs it too. What
+// stays here is the fitter's own view of an unbounded tail: a size that never
+// decays is reported as the longest RT60 this fitter will consider.
 double EffectsFit::rt60ForSize (double size)
 {
-    // Matches Reverb::setParameters.
-    const auto feedback = juce::jlimit (0.0, 0.98, 0.7 + 0.28 * size);
-    if (feedback <= 0.0 || feedback >= 1.0)
-        return kMaxRt60Seconds;
-
-    // Each pass round a comb multiplies by `feedback` and takes `D` seconds,
-    // so the decay is -20*log10(feedback) dB every D.
-    const auto dbPerPass = -20.0 * std::log10 (feedback);
-    if (dbPerPass <= 1.0e-9)
-        return kMaxRt60Seconds;
-    return 60.0 * kMeanCombSeconds / dbPerPass;
+    const auto rt60 = Reverb::rt60ForSize (size);
+    return rt60 > 0.0 ? rt60 : kMaxRt60Seconds;
 }
 
 double EffectsFit::sizeForRt60 (double rt60Seconds)
 {
-    if (rt60Seconds <= 0.0)
-        return 0.0;
-    // Inverse of the above: f = 10^(-3D/RT60).
-    const auto feedback = std::pow (10.0, -3.0 * kMeanCombSeconds / rt60Seconds);
-    return juce::jlimit (0.0, 1.0, (feedback - 0.7) / 0.28);
+    return Reverb::sizeForRt60 (rt60Seconds);
 }
 
 EffectsFit::ReverbEstimate EffectsFit::detectReverb (const float* samples, int numSamples,
