@@ -28,6 +28,7 @@
 //   autosynth_vital  patch.json theirs.wav
 //   autosynth_diff   ours.wav   theirs.wav
 
+#include "eval/Recovery.h"
 #include "fit/PartialFit.h"
 #include "fit/Refine.h"
 #include "ir/Patch.h"
@@ -212,7 +213,9 @@ int main (int argc, char* argv[])
     const auto args = parseArgs (argc, argv);
     const auto& positional = args.positional;
 
-    if (positional.size() < 2)
+    const auto evaluating = args.options.count ("--eval") > 0;
+
+    if (positional.size() < 2 && ! evaluating)
     {
         std::fprintf (stderr,
                       "usage: autosynth_vital <patch.json> <out.wav> "
@@ -224,8 +227,8 @@ int main (int argc, char* argv[])
     }
 
     const auto cwd = juce::File::getCurrentWorkingDirectory();
-    const auto patchFile = cwd.getChildFile (positional[0]);
-    const auto outFile = cwd.getChildFile (positional[1]);
+    const auto patchFile = cwd.getChildFile (positional.size() > 0 ? positional[0] : "patch.json");
+    const auto outFile = cwd.getChildFile (positional.size() > 1 ? positional[1] : "out.wav");
 
     // With --fit the first argument is an output rather than an input: the
     // target is fitted with Vital doing the rendering, and the patch it settles
@@ -249,7 +252,7 @@ int main (int argc, char* argv[])
         // The target's own rate, so the loss compares like with like.
         sampleRate = targetRate;
     }
-    else
+    else if (! evaluating)
     {
         juce::String error;
         patch = autosynth::Patch::fromFile (patchFile, &error);
@@ -417,6 +420,41 @@ int main (int argc, char* argv[])
 
         return std::vector<float> (collected.begin() + latency, collected.begin() + latency + wanted);
     };
+
+    // The recovery harness, with Vital as the synth being measured.
+    //
+    // Not the same question autosynth_eval asks. That one renders targets from
+    // this engine and checks the fitter gets its parameters back, which is
+    // blind to everything the other synth does differently. This moves the
+    // whole experiment into Vital's world: random patches rendered *by Vital*
+    // are the targets, and the control and every refinement candidate are
+    // rendered there too. For a project whose deliverable is a preset for
+    // someone else's synth, that is the question worth answering.
+    //
+    // Read against autosynth_eval's own control rather than against its fitted
+    // scores. Different targets, so the absolute numbers are not comparable;
+    // what compares is how far each run beats the control it ran with.
+    if (evaluating)
+    {
+        autosynth::Recovery::Options evalOptions;
+        evalOptions.trials = (int) args.value ("--trials", 12.0);
+        evalOptions.seed = (unsigned) args.value ("--seed", 0.0);
+        evalOptions.sampleRate = sampleRate;
+        evalOptions.refineEvaluations = (int) args.value ("--refine-evals", 192.0);
+        evalOptions.refine = args.value ("--no-refine", 0.0) == 0.0;
+        evalOptions.renderer = [&] (const autosynth::Patch& p, double dur, double gateSeconds)
+        {
+            return renderPatch (p, p.rootHz, dur, gateSeconds);
+        };
+
+        const auto started = juce::Time::getMillisecondCounterHiRes();
+        const auto summary = autosynth::Recovery::run (evalOptions);
+        std::printf ("\n%s", autosynth::Recovery::toText (summary).toRawUTF8());
+        std::printf ("  rendered through Vital, %.1f s for %d trials\n\n",
+                     (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0,
+                     summary.trials);
+        return summary.trials > 0 ? 0 : 1;
+    }
 
     // Fitting, with Vital as the renderer.
     //

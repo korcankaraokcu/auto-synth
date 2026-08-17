@@ -15,18 +15,32 @@ namespace
 
 constexpr int kHop = 256;
 
+// Every render in the harness goes through here, target and candidate and
+// control alike, so that swapping the synth swaps all of them together. Scoring
+// a Vital-rendered target against an engine-rendered control would measure the
+// difference between the two synths and call it a fitting error.
 std::vector<float> renderPatch (const Patch& patch, double sampleRate,
-                                double duration, double gate)
+                                double duration, double gate,
+                                const Recovery::Renderer& renderer = {})
 {
-    Engine engine;
-    engine.prepare (sampleRate, 512);
-    engine.setPatch (patch);
+    std::vector<float> out;
 
-    juce::AudioBuffer<float> buffer;
-    engine.renderOffline (buffer, patch.rootHz, duration, gate);
+    if (renderer)
+    {
+        out = renderer (patch, duration, gate);
+    }
+    else
+    {
+        Engine engine;
+        engine.prepare (sampleRate, 512);
+        engine.setPatch (patch);
 
-    const auto* data = buffer.getReadPointer (0);
-    std::vector<float> out (data, data + buffer.getNumSamples());
+        juce::AudioBuffer<float> buffer;
+        engine.renderOffline (buffer, patch.rootHz, duration, gate);
+
+        const auto* data = buffer.getReadPointer (0);
+        out.assign (data, data + buffer.getNumSamples());
+    }
 
     float peak = 0.0f;
     for (auto v : out)
@@ -436,7 +450,7 @@ Recovery::Summary Recovery::run (const Options& options)
         Trial trial;
         trial.truth = randomPatch (rng);
         const auto target = renderPatch (trial.truth, options.sampleRate,
-                                         options.duration, options.gate);
+                                         options.duration, options.gate, options.renderer);
         if (peakOf (target) < options.minPeak)
             continue; // inaudible target; resample rather than score noise
 
@@ -450,6 +464,7 @@ Recovery::Summary Recovery::run (const Options& options)
             Refine::Options refineOptions;
             refineOptions.maxEvaluations = options.refineEvaluations;
             refineOptions.gateSeconds = options.gate;
+            refineOptions.renderer = options.renderer;
             trial.fitted = Refine::run (trial.fitted, target.data(), (int) target.size(),
                                         options.sampleRate, refineOptions).patch;
         }
@@ -457,7 +472,8 @@ Recovery::Summary Recovery::run (const Options& options)
         // The fitted patch is rendered at the pitch it decided on, exactly as
         // the plugin would play it.
         const auto fittedAudio = renderPatch (trial.fitted, options.sampleRate,
-                                              options.duration, options.gate);
+                                              options.duration, options.gate,
+                                              options.renderer);
         trial.fit = score (fittedAudio, target, options.sampleRate);
 
         // The control: a default patch, played at the true pitch. It is the
@@ -465,7 +481,8 @@ Recovery::Summary Recovery::run (const Options& options)
         Patch control;
         control.rootHz = trial.truth.rootHz;
         const auto controlAudio = renderPatch (control, options.sampleRate,
-                                               options.duration, options.gate);
+                                               options.duration, options.gate,
+                                               options.renderer);
         trial.control = score (controlAudio, target, options.sampleRate);
 
         trial.truthReverb = trial.truth.reverb.enabled && trial.truth.reverb.level > 1.0e-3f;

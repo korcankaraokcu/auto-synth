@@ -4,6 +4,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -39,6 +40,11 @@ namespace autosynth
 class Recovery
 {
 public:
+    // Turns a patch into mono audio at Options::sampleRate. See Options below.
+    using Renderer = std::function<std::vector<float> (const Patch& patch,
+                                                       double durationSeconds,
+                                                       double gateSeconds)>;
+
     struct Options
     {
         int trials = 24;
@@ -52,6 +58,22 @@ public:
         // or a master level near zero. Scoring those measures nothing, so they
         // are resampled rather than counted.
         float minPeak = 0.05f;
+
+        // Which synth the harness is measuring. Left empty this is the engine
+        // in this repository, and the note above about the modelling gap
+        // applies to that engine.
+        //
+        // Supplied, it replaces *every* render -- target, fitted, control and
+        // each refinement candidate -- so the whole question moves into the
+        // other synth's world: can the fitter recover the parameters of a patch
+        // that synth rendered? For a project whose deliverable is a preset for
+        // someone else's synth, that is the question that matters, and it is
+        // not the same one as recovering our own.
+        //
+        // It must be all or nothing. Rendering the target in one synth and the
+        // control in the other would score the difference between two synths
+        // and report it as a fitting error.
+        Renderer renderer;
     };
 
     // Distances between a rendered patch and the target, all lower-is-better.

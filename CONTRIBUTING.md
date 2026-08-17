@@ -54,7 +54,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 | `autosynth_probe` | Analysis probe — WAV in, every intermediate stage out as JSON |
 | `autosynth_diff` | A/B diagnosis — two WAVs in, the difference on named axes out |
 | `autosynth_eval` | Ground-truth recovery harness — how good is the fitter? |
-| `autosynth_vital` | Renders a patch through the installed Vital VST3 — measures the export gap |
+| `autosynth_vital` | Renders, fits and evaluates through the installed Vital VST3 |
 | `install_plugin` | Copies the VST3 to the per-user plug-in folder |
 
 `autosynth_vital` needs Vital installed and links none of its code; it hosts
@@ -67,6 +67,22 @@ autosynth_render patch.json ours.wav --note 440
 autosynth_vital  patch.json theirs.wav
 autosynth_diff   ours.wav   theirs.wav
 ```
+
+It has two further modes, both of which put Vital where this engine usually
+sits: `--fit target.wav` runs the fitter with Vital rendering every candidate,
+and `--eval` runs the recovery harness entirely inside Vital -- random patches
+rendered by Vital as the targets, and the control and every candidate rendered
+there too.
+
+```
+autosynth_vital fitted.json out.wav --fit samples/clarinet.wav --dur 4 --gate 3
+autosynth_vital --eval --trials 12 --seed 0
+autosynth_eval  --trials 12 --seed 0        # the same question, this engine
+```
+
+The last two are *not* comparable by their absolute scores: the targets are
+different populations, because one set was rendered by Vital and the other by
+this engine. What compares is how far each run beats the control it ran with.
 
 ### Known build traps
 
@@ -828,6 +844,54 @@ So: viable, affordable, and not yet demonstrated to be *better*. One sample is
 not a decision, and the honest next step is the recovery harness over many
 patches rather than another listen to the clarinet. What the experiment does
 settle is that the mechanism works and what it costs, which is what it was for.
+
+### The harness in Vital's world, and the gap it found
+
+`Recovery::Options::renderer` takes the same shape, and `autosynth_vital --eval`
+supplies it. When set it replaces *every* render -- target, fitted, control and
+each refinement candidate -- so random patches rendered by Vital become the
+targets. That is all-or-nothing on purpose: rendering the target in one synth
+and the control in the other would measure the difference between two synths and
+report it as a fitting error.
+
+Twelve trials, seed 0, refinement on. Absolute scores are not comparable across
+the two runs because the targets are different populations; what compares is how
+far each run beats the control it ran with.
+
+| | this engine | through Vital |
+|---|---|---|
+| spectral | 0.799 vs 2.312 control (2.9x) | 0.510 vs 1.279 (2.5x) |
+| loudness dB | 3.704 vs 21.463 (5.8x) | 9.128 vs 25.075 (2.7x) |
+| centroid oct | 0.384 vs 1.688 (4.4x) | 0.226 vs 1.290 (5.7x) |
+| oscillator count exact | 83.3% | **58.3%** |
+| root within a semitone | 91.7% | **75.0%** |
+
+**The control tells the real story.** Its spectral distance nearly halves, from
+2.312 to 1.279. The control is a *default patch* scored against the target, so a
+smaller number means the targets are closer to the default -- Vital is rendering
+a narrower range of sounds from the same random patches than this engine does.
+
+That is not Vital being less capable. It is the exporter dropping most of the
+IR. `Patch` carries a filter, an envelope and a reverb send **per oscillator**,
+and `VitalExport` writes none of them: one global `filter_1`, and `env_1` to
+`env_3`. So a random patch whose three oscillators have three different filters
+exports as three oscillators sharing one, and the variety collapses.
+
+Everything else follows from that. Those exact parameters dominate the
+worst-recovered list in the Vital run -- `oscs.0.filter.resonance`,
+`oscs.2.filter.env.curve`, `oscs.0.filter.env.attack`, `oscs.2.reverb_send` --
+because they are unrecoverable by construction: nothing in the rendered audio
+depends on them. Counting and root pitch fall because analysis is reading audio
+whose sources have been flattened together. And refinement was searching
+dimensions the renderer ignores, spending its budget on a flat objective, which
+is the likeliest reason the clarinet fit came out no better than before.
+
+**So the renderer swap is blocked on the exporter, not on the renderer.** The
+measurement that looked like "is Vital a good enough optimiser target" turned
+out to be "the preset does not yet say everything the patch does". Vital has
+room for all of it -- two filters, six envelopes, sixty-four modulation slots --
+so this is work rather than a wall, but it has to come first, and the honest
+reading is that no comparison of the two renderers means much until it does.
 
 ### Noise as a waveform
 
