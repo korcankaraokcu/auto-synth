@@ -8,6 +8,7 @@
 #include "fit/EffectsFit.h"
 #include "fit/EnvelopeFit.h"
 #include "fit/FilterFit.h"
+#include "fit/NdFilters.h"
 #include "fit/Modulation.h"
 #include "fit/Nmf.h"
 #include "fit/Nnls.h"
@@ -611,10 +612,30 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
         for (size_t i = 0; i < shapeTimes.size(); ++i)
             shapeTimes[i] = i < partialSet.times.size() ? partialSet.times[i]
                                                         : static_cast<float> (i * options.hop / sampleRate);
+        // Smoothed hard before the envelope is fitted to it.
+        //
+        // A loudness contour wobbles with the vibrato; a cutoff trajectory does
+        // that and is an estimate on top, and the estimate is the noisier half.
+        // Frame to frame the clarinet's runs 1180, 1292, 1731, 1505, 2498,
+        // 3108, 4124, 2128, 3975, 1076, 2866 Hz. An ADSR fitted to that chases
+        // whichever spike happens to be highest and then falls off it: the
+        // violin came back with a two second sweep to fifteen kilohertz and a
+        // sustain of 0.02, which is a filter that opens across the whole note
+        // and then shuts, and is nothing a bowed note does.
+        //
+        // A third of a second is about a vibrato period and a good deal longer
+        // than the spikes. Only the shape is smoothed -- the base cutoff and
+        // the sweep depth are already settled by `trajectoryToEnv`, which has
+        // its own defence against outliers.
+        auto envShape = split.shape;
+        const auto shapeSpan = juce::jmax (1, (int) std::lround (0.33 * sampleRate / options.hop));
+        if ((int) envShape.size() > shapeSpan * 2)
+            envShape = nd::uniformFilter1d (envShape, shapeSpan);
+
         // Not an amplitude contour: a cutoff trajectory is already measured in
         // octaves, so fitting its attack curve in decibels takes the logarithm
         // twice and bends it far too hard.
-        patch.filter.env = EnvelopeFit::fitAdsr (split.shape, shapeTimes, gateTime, 0.05f,
+        patch.filter.env = EnvelopeFit::fitAdsr (envShape, shapeTimes, gateTime, 0.05f,
                                                  oneShot, false);
     }
 

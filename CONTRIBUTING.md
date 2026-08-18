@@ -797,6 +797,49 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### An envelope's full level is what the note holds, not its loudest frame
+
+Reported by ear and long-standing: both envelopes rise too slowly and then drop
+to a level that sounds unlike the recording. The violin fitted a 0.61 s
+amplitude attack followed by an 8 ms collapse to 0.60, and a *filter* envelope
+that swept two seconds up to fifteen kilohertz and then slammed back to four in
+29 ms.
+
+The step is structural rather than a measurement error. An ADSR attacks to one
+and then decays, so if one is normalised to the loudest single frame -- and on
+this violin the loudest frame is a vibrato crest 1.17 s into the note, not an
+attack transient -- the fit has to spend a decay getting back down to the level
+the note actually sustains. An earlier fix took the same view of the decay and
+measured it on a smoothed contour; the step survived, because the peak it decays
+*from* was still a crest.
+
+Smoothing over about a vibrato period first and normalising by that maximum
+makes one mean the level the note reaches and keeps. Crests sit a little above
+one, which nothing downstream minds, and a note that rises and holds fits an
+attack and a sustain near one with nothing in between. The absolute scale this
+gives up is not information: oscillator levels are solved against the target
+afterwards, so the envelope only carries the shape.
+
+The filter envelope needed the same treatment for a different reason. Its shape
+comes from the cutoff trajectory, which is an estimate on top of a wobble and
+much the noisier of the two, so an ADSR fitted to it chases whichever spike is
+highest and falls off it -- the violin's sustain came back at 0.02. Smoothing
+the shape over a third of a second before fitting takes that to 0.47, and the
+clarinet's to 0.99. Only the shape: the base cutoff and sweep depth are settled
+by `trajectoryToEnv`, which has its own defence against outliers.
+
+**The violin now reads `ok` on every axis but one.** Its noisiness is 0.281
+against the recording's 0.287, which is the oldest complaint in this file and
+the first time it has been in tolerance; brightness, wobble, vibrato and
+note-off are all in range, and the timbre drift is 1.01 dB out against a
+tolerance of 1.00. The clarinet keeps its wobble and drift and gives up some
+brightness and 0.12 s of attack.
+
+`lfo_amp.golden.json` was re-blessed: its amplitude sustain moves from 0.492 to
+0.664, which is the same fixture measured under the new convention rather than a
+change in what the analysis sees. It is an amplitude-modulated case, which is
+exactly where a crest and a held level differ.
+
 ### Trajectory terms in the objective
 
 Everything that resisted fitting today resisted in the same way. Refinement

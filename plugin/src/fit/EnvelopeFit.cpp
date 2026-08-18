@@ -327,7 +327,35 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     if (rawCurve.size() < 4 || times.size() < 4)
         return { 0.01f, 0.1f, 0.5f, 0.1f, 0.0f };
 
-    const auto peak = *std::max_element (rawCurve.begin(), rawCurve.end());
+    // Full level is the loudest the note *holds*, not the loudest single frame.
+    //
+    // Normalising by the raw maximum is what puts a step in the envelope, and
+    // the step is structural rather than a measurement error: an ADSR attacks
+    // to one and then decays, so if one is a vibrato crest the note reaches
+    // once, the fit has to spend a decay getting back down to the level it
+    // actually sustains. On the violin that came out as a 0.61 s rise to full
+    // followed by an 8 ms collapse to 0.60, and on its filter envelope a 2 s
+    // sweep to 15 kHz followed by a 29 ms slam back to 4 kHz -- both heard,
+    // correctly, as unlike anything a bowed note does.
+    //
+    // Smoothing over about a vibrato period first and normalising by *that*
+    // maximum makes one mean the level the note reaches and keeps. Crests then
+    // sit a little above one, which no measurement below minds, and a note that
+    // rises and holds fits an attack and a sustain near one with nothing in
+    // between. An earlier fix took the same view of the decay alone; the step
+    // survived it because the peak it decays *from* was still a crest.
+    //
+    // The absolute scale this gives up is not information: oscillator levels
+    // are solved against the target afterwards, so the envelope only has to
+    // carry the shape.
+    const auto dtForPeak = meanDiff (times);
+    const auto contourSpan = std::max (1, static_cast<int> (std::lround (kContourSmoothSeconds / dtForPeak)));
+
+    auto smoothedRaw = rawCurve;
+    if (contourSpan > 1 && static_cast<int> (smoothedRaw.size()) > contourSpan)
+        smoothedRaw = nd::uniformFilter1d (smoothedRaw, contourSpan);
+
+    const auto peak = *std::max_element (smoothedRaw.begin(), smoothedRaw.end());
     if (peak <= 1.0e-9f)
         return { 0.01f, 0.1f, 0.5f, 0.1f, 0.0f };
 
@@ -348,9 +376,7 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
     // Smoothing over roughly one vibrato period gives a level the note actually
     // sustains at rather than one crest of it. The *crossing* is still found on
     // the unsmoothed curve, so a genuinely fast attack keeps its timing.
-    const auto dtForPeak = meanDiff (times);
     auto contour = curve;
-    const auto contourSpan = std::max (1, static_cast<int> (std::lround (kContourSmoothSeconds / dtForPeak)));
     if (contourSpan > 1 && static_cast<int> (contour.size()) > contourSpan)
         contour = nd::uniformFilter1d (contour, contourSpan);
     const auto fullLevel = *std::max_element (contour.begin(), contour.end());
