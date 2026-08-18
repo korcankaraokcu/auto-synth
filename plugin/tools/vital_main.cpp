@@ -39,8 +39,11 @@
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <utility>
 #include <map>
 #include <vector>
 
@@ -213,7 +216,8 @@ int main (int argc, char* argv[])
     const auto args = parseArgs (argc, argv);
     const auto& positional = args.positional;
 
-    const auto evaluating = args.options.count ("--eval") > 0;
+    const auto evaluating = args.options.count ("--eval") > 0
+                         || args.options.count ("--sweep") > 0;
 
     if (positional.size() < 2 && ! evaluating)
     {
@@ -420,6 +424,83 @@ int main (int argc, char* argv[])
 
         return std::vector<float> (collected.begin() + latency, collected.begin() + latency + wanted);
     };
+
+    // Which searchable parameters actually move the sound Vital makes.
+    //
+    // The unit test guarding this can only ask whether a parameter changes the
+    // preset *text*. That catches a parameter nobody writes, and misses the
+    // worse case: one written into a control that turns out to be inert,
+    // because it is on a page Vital ignores, or scaled to nothing, or routed
+    // somewhere the signal never reaches. Both look identical from this side of
+    // the boundary and only one of them can be heard.
+    //
+    // So this moves each parameter to the far end of its declared range, plays
+    // the result, and reports the spectral distance from the unmoved patch.
+    // Anything near zero is carried in name only.
+    if (args.options.count ("--sweep") > 0)
+    {
+        autosynth::Patch probe;
+        probe.rootHz = 220.0f;
+        probe.noiseLevel = 0.3f;
+        probe.reverb = { true, 0.5f, 0.5f, 0.3f };
+        probe.delay = { true, 0.25f, 0.35f, 0.4f };
+        probe.filter.type = autosynth::FilterType::lowpass;
+        probe.filter.cutoffHz = 2000.0f;
+        probe.filter.envAmount = 1.0f;
+
+        for (int i = 0; i < autosynth::kNumOsc; ++i)
+        {
+            auto& osc = probe.oscs[(size_t) i];
+            osc.enabled = true;
+            osc.level = 0.5f;
+            osc.unisonVoices = 3;
+            osc.unisonDetune = 12.0f;
+            osc.waveform = autosynth::Waveform::pulse;
+            osc.waveformB = autosynth::Waveform::square;
+            osc.waveMorph = 0.4f;
+            osc.pulseWidth = 0.35f;
+            osc.numFrames = 3;
+            osc.framePositionEnvAmount = 0.5f;
+            osc.envEnabled = true;
+        }
+
+        probe.lfos[0].dest = autosynth::LfoDest::pitch;
+        probe.lfos[0].depth = 0.4f;
+        probe.lfos[1].dest = autosynth::LfoDest::cutoff;
+        probe.lfos[1].depth = 0.4f;
+
+        const auto base = renderPatch (probe, probe.rootHz, duration, gate);
+        const auto specs = autosynth::Refine::continuousSpecs();
+
+        std::vector<std::pair<double, std::string>> rows;
+        for (const auto& path : autosynth::Refine::scopeFor (probe))
+        {
+            const auto spec = std::find_if (specs.begin(), specs.end(),
+                                            [&path] (const auto& s) { return s.path == path; });
+            if (spec == specs.end())
+                continue;
+
+            const auto current = autosynth::Refine::parameterValue (probe, path);
+            const auto moved = std::abs (current - spec->lo) > std::abs (current - spec->hi)
+                                 ? spec->lo : spec->hi;
+
+            auto altered = probe;
+            autosynth::Refine::setParameterValue (altered, path, moved);
+
+            const auto audio = renderPatch (altered, altered.rootHz, duration, gate);
+            const auto scored = autosynth::Recovery::score (audio, base, sampleRate);
+            rows.emplace_back (scored.spectral, path);
+        }
+
+        std::sort (rows.begin(), rows.end());
+        std::printf ("\nhow far each searchable parameter moves Vital output\n");
+        std::printf ("  spectral distance from the unmoved patch; near zero is carried in name only\n\n");
+        for (const auto& row : rows)
+            std::printf ("  %-34s %.4f%s\n", row.second.c_str(), row.first,
+                         row.first < 0.02 ? "   <- inert" : "");
+        std::printf ("\n");
+        return 0;
+    }
 
     // The recovery harness, with Vital as the synth being measured.
     //
