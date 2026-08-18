@@ -17,6 +17,11 @@ namespace autosynth
 // separate measurements depend on being smoothed by the *same* amount, and a
 // decay cannot be shorter than what this can resolve.
 constexpr double kContourSmoothSeconds = 0.25;
+
+// How slowly an inferred trajectory is assumed to fall, in seconds per unit of
+// drop. A quarter second for a full-range fall is slow enough that no step
+// survives and fast enough to leave a real sweep its shape.
+constexpr float kMinFallSecondsPerUnit = 0.25f;
 namespace
 {
 const float kCurveCandidates[] = { 0.0f, 0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f };
@@ -429,7 +434,32 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
 
     const auto onsetI = firstAbove (floor);
     std::vector<float> held (curve.begin(), curve.begin() + gateI);
-    auto peakI = firstAbove (0.9f * fullLevel);
+
+    // Full level is reached when *either* the raw curve or the smoothed contour
+    // says so, whichever comes first.
+    //
+    // The raw crossing on its own is what a fast attack needs, and on its own
+    // it is also how the attack ran late and the decay came out instant. The
+    // level being crossed is the contour's maximum, so on a noisy shape the raw
+    // curve can fail to exceed it until some late spike -- by which time the
+    // contour has already fallen past the point the decay is measured to, the
+    // decay loop breaks on its first step, and the envelope becomes a long
+    // climb and a cliff. On the violin's filter that read as a two second
+    // build and a drop with nothing between them, which is not in the
+    // recording.
+    //
+    // Taking the earlier of the two keeps a genuinely fast attack -- its raw
+    // crossing is early by definition -- and stops a slow one being defined by
+    // a spike.
+    auto contourPeakI = gateI - 1;
+    for (int i = 0; i < gateI; ++i)
+        if (contour[static_cast<size_t> (i)] >= 0.9f * fullLevel)
+        {
+            contourPeakI = i;
+            break;
+        }
+
+    auto peakI = std::min (firstAbove (0.9f * fullLevel), contourPeakI);
     if (peakI >= gateI)
         peakI = peakIndex (held); // never reached it before note-off; fall back
     const auto attack = std::max (times[static_cast<size_t> (peakI)]
@@ -477,6 +507,25 @@ Adsr EnvelopeFit::fitAdsr (const std::vector<float>& rawCurve, const std::vector
                                   - times[static_cast<size_t> (peakI)], 5.0e-3f);
             break;
         }
+    }
+
+    // A trajectory that is itself an estimate does not get to assert a step.
+    //
+    // A loudness contour is measured; a cutoff trajectory is inferred, frame by
+    // frame, from a deconvolution that has no unique answer -- and it is noisy
+    // enough that a one-frame cliff in it says more about the estimator than
+    // about the instrument. Believing one gave the violin a filter that climbed
+    // for two seconds and then dropped to 47% with nothing in between, which is
+    // audible and is not in the recording.
+    //
+    // So in that domain a fall is given a floor proportional to its size: a
+    // full-range drop takes at least half a second, a half-range drop half of
+    // that. Nothing here stops a *measured* envelope decaying as fast as it
+    // likes, because amplitude contours keep their own answer.
+    if (! amplitudeDomain)
+    {
+        const auto drop = juce::jlimit (0.0f, 1.0f, 1.0f - sustain);
+        decay = std::max (decay, kMinFallSecondsPerUnit * drop);
     }
 
     // Release: note-off -> effectively silent.

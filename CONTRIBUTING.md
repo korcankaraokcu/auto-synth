@@ -828,7 +828,30 @@ the shape over a third of a second before fitting takes that to 0.47, and the
 clarinet's to 0.99. Only the shape: the base cutoff and sweep depth are settled
 by `trajectoryToEnv`, which has its own defence against outliers.
 
-**The violin now reads `ok` on every axis but one.** Its noisiness is 0.281
+**And then the filter envelope still built slowly and dropped**, which was
+heard before it was measured. Two more causes behind it.
+
+The index where the attack ends was found on the raw curve while the decay was
+judged on the smoothed contour, so on a noisy shape the raw curve could fail to
+cross full level until some late spike -- by which point the contour had already
+fallen past what the decay measures to, the decay loop broke on its first step,
+and the envelope became a long climb and a cliff. Full level is now reached when
+*either* says so, whichever comes first, which keeps a genuinely fast attack
+because its raw crossing is early by definition.
+
+And a trajectory that is itself an estimate does not get to assert a step. A
+loudness contour is measured; a cutoff trajectory is inferred frame by frame
+from a deconvolution with no unique answer, and a one-frame cliff in it says
+more about the estimator than the instrument. A fall there now has a floor
+proportional to its size, a quarter second for the full range. Measured
+envelopes keep their own answer, so nothing stops a real one decaying fast.
+
+Set from what it is worth rather than by taste: at half a second per unit the
+violin loses its brightness and a third of its noise, at 0.15 it loses more, and
+at 0.25 the clarinet reads `ok` on all eight axes and the violin on seven.
+
+**The clarinet now reads `ok` on every axis**, which it has never done, and the
+violin on every axis but one. Its noisiness is 0.281
 against the recording's 0.287, which is the oldest complaint in this file and
 the first time it has been in tolerance; brightness, wobble, vibrato and
 note-off are all in range, and the timbre drift is 1.01 dB out against a
