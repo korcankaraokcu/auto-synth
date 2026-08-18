@@ -886,12 +886,401 @@ whose sources have been flattened together. And refinement was searching
 dimensions the renderer ignores, spending its budget on a flat objective, which
 is the likeliest reason the clarinet fit came out no better than before.
 
-**So the renderer swap is blocked on the exporter, not on the renderer.** The
+**So the renderer swap was blocked on the exporter, not on the renderer.** The
 measurement that looked like "is Vital a good enough optimiser target" turned
-out to be "the preset does not yet say everything the patch does". Vital has
-room for all of it -- two filters, six envelopes, sixty-four modulation slots --
-so this is work rather than a wall, but it has to come first, and the honest
-reading is that no comparison of the two renderers means much until it does.
+out to be "the preset does not yet say everything the patch does".
+
+### Closing it, and the parameters that turned out not to exist
+
+The guard first, because it is the part worth keeping: `test_vital_export.cpp`
+now walks `Refine::scopeFor` on a patch with everything switched on, moves each
+parameter to the far end of its declared range, and asserts the exported preset
+changes. If the fitter is allowed to search it, the preset has to carry it.
+Anything else is an optimiser working on a flat objective and a preset that
+quietly means something else. It listed forty-five parameters on the first run.
+
+Fifteen of them were the per-oscillator amplitude envelopes, and those are
+straightforwardly expressible: Vital has six envelopes against this engine's
+need for three, so env_4 to env_6 now drive `osc_N_level`. The level is written
+as zero and the envelope's *amount* carries it, because modulation adds rather
+than multiplies and an envelope that scales an oscillator has to be able to
+silence it. The shape is not identical -- Vital's level control is quadratic, so
+the amplitude follows the square of the curve -- and that matters less than it
+sounds, because what the export owes the fitter is that the parameter has an
+*effect*. Three more were the delay, dropped as silently as the reverb had been.
+
+The remaining twenty-seven were per-oscillator filters and reverb sends, and the
+plan for them was to trim the IR: two shared filters plus a routing choice,
+matching Vital exactly. Sizing the change first is what stopped it. Sixteen
+files, the golden engine fixtures, the editor -- and then the reason not to
+bother at all: **`PartialFit` never enables a per-oscillator filter.** It leaves
+`filterEnabled` false on every path. The only patches that ever had one came
+from the recovery harness's own random sampler and from a hand switch in the
+editor.
+
+So the export was not dropping something real. The harness was *generating*
+something unreachable, scoring the fitter on its failure to recover a feature no
+fit can emit, and -- because those were exactly the parameters the exporter
+dropped -- that is most of why the run through Vital looked so much worse than
+the run through this engine. The fix is two small deletions rather than a
+refactor: `scopeFor` no longer offers them, and `randomPatch` no longer
+generates them.
+
+Reverb send goes for the plainer reason. Vital sends an oscillator to a filter,
+to the effects bus, or straight out; there is no per-oscillator send *level*, so
+no value searched here could ever reach the preset.
+
+The rule both follow, and the one worth carrying forward: **a parameter the
+deliverable cannot express is one the fitter must not search.** Before the
+renderer is Vital it is merely misleading; after, it is a flat direction the
+optimiser spends its budget on. The harness stops *scoring* them for the same
+reason -- a parameter nothing is permitted to move reports the distance between
+two random draws, and reads in the worst-recovered list as a fitter failure
+while crowding out the real ones.
+
+**And the fresh baselines, which is where the warning at the top of this section
+earns its keep.** Removing one `rng.nextBool()` per oscillator shifts every
+draw after it, so the target population is not the one the earlier numbers were
+measured on. It happens to be much harder: three-oscillator targets went from
+one of twelve to six of twelve, and oscillator counting reads 33.3% where the
+old population read 83.3%. That is not a regression, it is a different exam, and
+the two must not be diffed. Both runs below share one population.
+
+| | this engine | through Vital |
+|---|---|---|
+| spectral | 0.966 vs 2.004 control (2.1x) | 0.573 vs 1.022 (1.8x) |
+| loudness dB | 3.266 vs 22.220 (6.8x) | 5.328 vs 15.197 (2.9x) |
+| centroid oct | 0.533 vs 1.293 (2.4x) | 0.397 vs 0.757 (1.9x) |
+| oscillator count exact | 33.3% | 33.3% |
+| root within a semitone | 33.3% | **58.3%** |
+
+Counting now lands identically, where before the trim the Vital run was
+twenty-five points behind -- which is the clearest evidence that the gap was the
+unreachable filters rather than anything about Vital. Root pitch is better
+through Vital than through this engine, which was not predicted and is not yet
+explained. This engine still beats its control by more on all three distances,
+which is what you would expect of an analysis stage tuned against it for the
+whole life of the project.
+
+The control distances stay lower through Vital -- 2.004 against 1.022 on the
+spectral term -- so Vital still renders a narrower range of sounds from the same
+patches than this engine does. Some of that is Vital's own character and some is
+export that has not been found yet. It is the number to watch as the exporter
+grows.
+
+### Timbre drift: the trajectory arches, and the frames are built from its ends
+
+Both fits are too static -- the clarinet renders 2.0 dB of drift against the
+recording's 4.3, the violin 0.3 against 1.6 -- and the same numbers come out of
+both engines, so this is the fitter rather than the export.
+
+Measuring the recording's harmonic profile in windows across the note says why.
+The second harmonic runs -8.2 dB, -4.3, **0.0**, -4.8, -8.5: it climbs about
+eight decibels and falls back. The trajectory *arches*, and its two ends are
+within 0.3 dB of each other.
+
+Two consequences, and the wavetable ladder is blind to both. The three frames
+are the energy-weighted mean over three equal thirds of the note, which averages
+the peak away -- the middle third reads -7.8 where its own middle reads 0.0 --
+so the fitted frames span 1.7 dB of an eight decibel movement. And the rung that
+decides whether to spend frames at all measures `driftDb` between the *first and
+last* frames, which for an arch is close to nothing.
+
+**Sampling the frames at the trajectory's extreme instead was built and
+reverted.** Taking the ends as points and the middle as the point furthest from
+the line between them is the obvious repair, and it made both fits worse: the
+clarinet fell to 1.1 dB of rendered drift and, on inspection, to a single frame.
+The scoring interpolates the three frames against a position that ramps linearly
+across the note, so it assumes frame one sits at the temporal midpoint. Move the
+frame and the model stops matching the data it is scored against, `frameError`
+stops beating the static table by its twenty percent margin, and the ladder
+throws the whole thing out.
+
+Two further attempts, and then the actual reason.
+
+**Sampling the frames where the sweep visits them** -- the ends and the middle,
+as instants rather than averages -- keeps the model aligned with the position
+ramp and still avoids the flattening. It fails too, and printing the ladder's
+own numbers says why rather than leaving it to inference:
+
+| clarinet | averaged over thirds | sampled at instants |
+|---|---|---|
+| static table error | 0.0248 | 0.0248 |
+| three-frame error | **0.0188** | **0.0486** |
+| verdict | beats the static table | twice as bad as it |
+
+Averaging is not a mistake in the scoring, it is what makes the model *score*.
+A mean over a third sits near the overall mean everywhere, so its
+energy-weighted error is low; instants are extreme at the knots and wrong
+between them, and a linear interpolation between three extremes is a triangle
+drawn through a curve.
+
+**Deciding on the averaged frames and drawing the sampled ones** is the obvious
+way to have both, and it is defensible -- whether the movement is worth
+thirty-two numbers and what the movement *is* are separate questions. It moved
+the clarinet's rendered drift from 2.0 dB to 2.1 against a target of 4.3. Not
+worth two frame models for a tenth of a decibel.
+
+So the obstruction is not how the frames are sampled. **The ladder's criterion
+is an energy-weighted average profile error, and an average is exactly what a
+model reproducing *movement* does not minimise.** A static table is the best
+possible answer to "what one profile is closest to all of them", and it will
+keep winning against any three-frame model on that question no matter where the
+three come from. The same shape of problem as the refinement objective moving
+the attack away from its target while improving its own loss: the search is
+fine, the thing being minimised is not what is wanted.
+
+A drift term in the ladder was the next thing to try and turned out to address
+neither recording. Printing the gates per sample says why: the clarinet passes
+both and already spends its three frames, so a rule about *whether* to spend
+them changes nothing there, and the violin was measured long ago as landing in
+the same place with frames forced on. Building it anyway would have been adding
+a criterion on faith.
+
+**Where the drift actually lives.** `autosynth_diff` now breaks the number down
+by harmonic, because a single figure saying the tone moves says nothing about
+what moves, and four attempts had been aimed at a quantity nobody could point
+to. On the clarinet, late third minus early third:
+
+| harmonic | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|
+| recording | +5.0 | +4.5 | +6.8 | +1.4 | +8.1 | +16.7 | +6.6 |
+| fit | +2.5 | +0.1 | +3.5 | -2.8 | +3.0 | +9.8 | -1.2 |
+
+Every harmonic rises against the fundamental, by more the higher it is. The note
+brightens *monotonically* across its whole length. An earlier reading of the
+same trajectory as an arch was an artefact of measuring fixed frequencies with a
+plain transform instead of the tracked partials the diagnostic uses -- worth
+recording as a caution, since it sent three attempts at the wavetable frames
+after a shape that was not there.
+
+Monotonic brightening is what a filter envelope is *for*, and the fitted one is
+working against it: attack 1.41 s on a three second note, and a sustain of 0.51,
+so the filter opens inside the first third and then closes halfway again.
+Stretching the attack to 3 s and holding the sustain at 1.0 takes the rendered
+drift from 2.0 dB to 2.6 against the target's 4.3, with brightness still in
+tolerance -- and overshoots the top harmonics while undershooting the second and
+third, which is a lowpass tilting the whole spectrum where the recording lifts
+its low harmonics more than a tilt would.
+
+So the wavetable ladder was never the place. The question became why the filter
+envelope fits a fast attack and a half sustain against a note whose harmonics
+rise throughout, and the answer is that **the cutoff trajectory it is fitted
+from is not good enough to derive a sweep from, and the pipeline currently works
+partly by accident.**
+
+The estimate on the clarinet, frame by frame, runs 1180, 1292, 1731, 1505, 2498,
+3108, 4124, 2128, 3975, 1076, 2866 Hz and spikes to 19.8 kHz. Then at note-off
+it falls to 441.6 Hz -- the fundamental, its floor, because with nothing left to
+measure there is nothing to estimate -- and sits there for the last quarter of a
+four second render. A quarter is enough to put the tenth percentile *inside the
+silence*, so the sweep is measured from the floor of a dead note up to a live
+one and reads 3.4 octaves, which clips against the 4 octave limit.
+
+Three repairs, each of which made both samples worse:
+
+| clarinet | timbre drift | brightness |
+|---|---|---|
+| as it stands | 2.0 dB | ok |
+| range taken from the sounding note only | 1.4 dB | dull by 0.31 oct |
+| and the trajectory smoothed to 0.3 s | 0.4 dB | ok, but `envAmount` went *negative* |
+
+The first says the 3.4 octaves was wrong *and* load-bearing: confined to the
+sounding note the tenth-to-ninetieth range is 0.59 octaves, which is the width
+of the noise band rather than any trend, and too small to produce a brightening
+of five to sixteen decibels. The inflated figure was accidentally supplying a
+sweep the honest one cannot. The second moved the base cutoff from 1515 Hz to
+4338 Hz, leaving the filter wide open, after which refinement found it better to
+*close* the envelope over the note than open it.
+
+That is the third time this session an error turned out to be cancelling another
+one -- the oscillator level clipping against the reverb proportion, the attack
+solved against the wrong signal, and now this. It is worth naming as a pattern:
+a pipeline tuned end to end against two recordings will find these balances, and
+each one has to be unpicked with the other held still.
+
+**The trend fit was then built**, since percentiles of a noisy estimate describe
+its spread and an envelope needs its trend. Median-filtered over a twelfth of
+the note to kill the spikes, with the sweep read as the difference between
+medians of the first and last sixth: on the clarinet that gives 2.74 octaves
+from a base of 1470 Hz, and brightness lands at 1171 Hz against the recording's
+1143. It is the right way to summarise the trajectory and it made the drift
+worse -- 2.0 dB to 1.4 -- so it went the way of the other three.
+
+**And measuring why settled the whole question.** The estimated cutoff, as
+medians by third of the sounding note, is 1424 Hz, 2224 Hz, 2128 Hz: it rises
+about 0.58 of an octave and then stops. The recording's second harmonic sits at
+883 Hz, *below that cutoff for the entire note*, and rises 5.0 dB from the early
+third to the late one.
+
+**A lowpass cannot raise a harmonic that is already in its passband.** So the
+clarinet's brightening is not a filter sweep at all -- it is the source spectrum
+moving, which is what the wavetable frames exist for. And the frames cannot see
+it, because the deconvolution that hands them their input divides out a cutoff
+trajectory that has absorbed part of the movement and invented the rest. The
+1.77 dB the ladder measures is what survives that.
+
+Which is the degeneracy this file warns about at the top of `WavetableFit`,
+arriving from the direction nobody was watching: a free-form spectrum and a
+filter explain the same signal, the order of fitting was chosen to stop the
+frames stealing the filter's job, and the filter is quietly doing the reverse.
+
+So the work is in the filter/source split rather than in either side of it. The
+useful lever is that the per-harmonic early-to-late tilt is *robust* -- it comes
+from tracked partials and it agrees with itself across measurements, unlike the
+ALS trajectory -- so it can say how much of the movement any candidate filter is
+allowed to claim. A sweep that would need to lift a harmonic below its own cutoff
+is claiming too much.
+
+Four attempts, four reverts, and the line of work redirected rather than
+advanced. Recorded at this length because the next person to look at timbre
+drift will otherwise start where the first attempt started.
+
+### Wander stops costing a slot
+
+The roadmap said an LFO is the wrong model for human wander, that it is
+audible, and that the fitter lacked a slot to spend on it. The second half was
+the real blocker, and it was this engine's shape rather than the target's:
+`kNumLfo` is two, both are taken on both library samples, and the wander was
+expressed as a *second LFO pointed at the first one's rate*. So the feature was
+measured, built, and then never once applied to either recording it was written
+for -- the gate `out.size() < maxCount` was never open.
+
+Vital's four random LFOs sit outside its eight ordinary ones and cost none of
+them. Expressing wander as two fields on the LFO that drifts -- how far the rate
+moves, in octaves, and how fast it moves -- costs nothing here either, and the
+gate is gone. Measured, not searched, on the same rule as every other
+measurement: `detectWander` reports both numbers and refinement leaves them
+alone.
+
+The violin's amplitude LFO now carries 0.811 octaves of drift at 2.78 Hz, which
+is what the detector reads off the recording. Rendered, this engine reaches 0.61
+octaves against the recording's 0.81, up from 0.47 without it.
+
+**What it does not reproduce is the drift being *periodic*.** The recording's
+period wander is detected at a coherent 2.78 Hz; a random LFO is aperiodic by
+construction, so the render measures more drift but still reports no drift
+*rate*. Whether the recording's 2.78 Hz is a real periodicity in the playing or
+an artefact of tracking a period that moves nearly as fast as the carrier is not
+something the numbers here settle. If it is real, the faithful shape is an
+ordinary LFO on the rate -- which Vital has seven spare of, and which the IR
+could carry the same way.
+
+The measured amplitude wobble now *overshoots*: 3.2 dB against the recording's
+2.2, where before it was 1.8. A drifting rate spreads the wobble, and the metric
+is an rms deviation that cannot tell depth from movement. This is the point
+where the number stops being the arbiter.
+
+### Solving the level and its modulation together
+
+Vital's oscillator level is quadratic and its modulation *adds* to the stored
+value. Writing a fitted tremolo depth in as the modulation amount gets both
+wrong at once: the swing lands on the square of the parameter rather than on the
+amplitude, and the top of it clips against the control's ceiling of one. A depth
+of 0.30 on a level of 0.95 swung the stored value from 0.65 to 1.24, of which
+everything above 1.0 was thrown away.
+
+The arithmetic is not a matter of taste. For an amplitude ratio of (1+d)/(1-d)
+between peak and trough the stored values need a ratio of r = sqrt((1+d)/(1-d)),
+which fixes the amount as a fraction (r-1)/(r+1) of the level; the level follows
+from wanting the mean amplitude to stay where it was. Where level plus
+modulation would still pass one, every oscillator is scaled down together and
+the master is given the difference back -- scaling one alone would change the
+balance between them, and the master cannot fix that per oscillator.
+
+**And the measured wobble got *smaller*.** The clipping had been exaggerating
+the swing: throwing away the top of the stored range while leaving the bottom
+alone widened the amplitude ratio from the intended 1.85 to 2.37, which read as
+more tremolo, which was closer to the target. Correcting the mapping removed an
+error that had been cancelling another one.
+
+The other one is the reverb. Rendering the same patch through both engines with
+the reverb switched off, the wobble reads 2.0 dB here and 1.7 dB in Vital, which
+is agreement; with it on, 3.4 dB against 1.9 dB. Vital's reverb is
+proportionally far louder in the mix, so it fills the dips.
+
+That is the crossfade-against-send mismatch again, seen from the other side.
+Matching the tail after the release needs a high dry/wet, because after the
+release the tail is all there is; matching the balance *during* the note needs a
+low one, because here the reverb is a send that leaves the dry alone. One
+control cannot do both, and the tail is the half that was calibrated against the
+recordings and listened to. The level mapping is now right and the wobble
+shortfall is the reverb's, which is worth knowing before anyone tunes the
+tremolo depth to compensate for it.
+
+### Every searchable parameter is audible in Vital
+
+The unit test guarding the export can only ask whether a parameter changes the
+preset *text*. That catches a parameter nobody writes and misses the worse case:
+one written into a control that turns out to be inert, because it is scaled to
+nothing, or routed somewhere the signal never reaches, or sits on a page Vital
+ignores. Both look identical from this side of the boundary, and only one of
+them can be heard.
+
+`autosynth_vital --sweep` moves each parameter in `Refine::scopeFor` to the far
+end of its declared range, plays the result through Vital, and reports the
+spectral distance from the unmoved patch. The answer is that nothing is inert.
+The weakest, an oscillator's envelope curve, still moves the output by 0.118,
+and the list runs smoothly up from there to 3.11 for the master level -- no
+cliff towards zero, which is what an unreachable control would look like.
+
+That closes the question the harness raised and rules out the obvious
+explanation for the remaining gap. Vital still renders a narrower range of
+sounds from the same random patches than this engine does -- control spectral
+distance 1.022 against 2.004 -- and it is *not* because parameters are failing
+to arrive. Something else is compressing the range, and the next place to look
+is how far each parameter moves each synth, rather than whether it moves them at
+all.
+
+### The attack is a fitter problem, and the measurement is not solid enough to fix it
+
+Both library samples export with an attack about 0.10 s faster than the
+recording, which looked like an export fault until the same patch was rendered
+by *this* engine and came out 0.10 s and 0.08 s fast as well. So the preset
+carries a too-fast attack faithfully; the attack is fitted short.
+
+The cause is a mismatch of signals rather than of numbers. `attackMeasuring`
+solves the attack parameter whose *envelope* measures back as the target's
+attack, which is the right idea against the wrong signal: what a listener hears,
+and what `autosynth_diff` measures, is the loudness contour of the finished
+audio, and that also carries the filter envelope, the reverb and the
+oscillator's own onset. On the clarinet the filter envelope opens over 1.4
+seconds, so the rendered rise is slower than the amplitude envelope alone
+predicts -- the fit aims at 0.337 s and renders 0.453.
+
+Refinement then moves it the other way. It is allowed to search the decay and
+the sustain, and moving those changes the rendered rise without touching the
+attack at all: the parameter goes 0.507 to 0.462 while the rendered attack goes
+0.453 to 0.267. Deriving the attack holds a crossing of the *envelope* fixed,
+and that is not the quantity that ends up being heard.
+
+**Closing the loop against the render was built, measured and reverted.** The
+obvious fix is the one the noise level already uses -- render, measure, correct,
+repeat -- and it worked on the clarinet, moving the rendered attack from 0.267
+to 0.315 against a target of 0.337, stable at both 44.1 and 48 kHz. A damped
+proportional step left the violin untouched, because its response has a plateau
+that reads as a small gradient; bisection fixed that, the response being
+monotonic even where it is not smooth.
+
+Then the violin went unstable. The same patch measured 0.499 s at 44.1 kHz and
+0.341 s at 48 kHz -- a 46% swing from a 9% change of rate, which is not a fact
+about the sound. Probing either side of both solutions explains it: a ten
+percent move in the attack parameter swings the measurement by 75% on the
+clarinet and 41% on the violin. Both solutions sit next to a cliff. The
+clarinet's good result was luck about which side of one it landed on.
+
+`attackSeconds` is the time to nine tenths of the level the note *holds*, and
+when the decay is near-instant and the sustain low -- the violin fits a decay of
+0.005 s and a sustain of 0.27 -- that crossing sits on a nearly flat stretch of
+the contour, where which frame crosses first stops being a fact about the sound.
+
+So the loop is reverted rather than shipped with a threshold tuned to make two
+samples pass. Solving against an ill-conditioned measurement is the failure this
+project keeps writing down in new costumes, and the order of work is the other
+way round: **a measurement worth solving against first, then the loop.** A rise
+time between two fractions of the peak, or a time to peak, would not depend on
+an estimate of the held level at all. That change moves every attack number
+this project has recorded, which is a thing to do deliberately.
 
 ### Noise as a waveform
 
