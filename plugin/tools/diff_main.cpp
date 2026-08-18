@@ -482,6 +482,43 @@ int main (int argc, char* argv[])
         std::printf ("\n");
     }
 
+    // Where the timbre drift lives, harmonic by harmonic.
+    //
+    // The single drift number says the tone moves and says nothing about what
+    // moves, which is not enough to act on: four attempts at the wavetable
+    // ladder were aimed at a figure whose origin nobody could point to. The
+    // deconvolved partials the fitter sees carry 1.8 dB of the clarinet's 4.3,
+    // and its filter envelope adds none of the rest, so the remainder has to be
+    // somewhere this shows and that did not.
+    const auto drifting = juce::jmin ((size_t) 8,
+                                      juce::jmin (a.profileEarly.size(), a.profileLate.size()));
+    if (drifting > 0 && b.profileEarly.size() >= drifting && b.profileLate.size() >= drifting)
+    {
+        const auto asDb = [] (double v) { return 20.0 * std::log10 (std::max (v, 1.0e-4)); };
+
+        std::printf ("\n  timbre drift by harmonic (late third minus early third, dB)\n");
+        std::printf ("  %-10s", "harmonic");
+        for (size_t k = 0; k < drifting; ++k)
+            std::printf ("%7d", (int) (k + 1));
+
+        std::printf ("\n  %-10s", "target");
+        for (size_t k = 0; k < drifting; ++k)
+            std::printf ("%+7.1f", asDb (a.profileLate[k]) - asDb (a.profileEarly[k]));
+
+        std::printf ("\n  %-10s", "fit");
+        for (size_t k = 0; k < drifting; ++k)
+            std::printf ("%+7.1f", asDb (b.profileLate[k]) - asDb (b.profileEarly[k]));
+
+        std::printf ("\n  %-10s", "early tgt");
+        for (size_t k = 0; k < drifting; ++k)
+            std::printf ("%7.1f", asDb (a.profileEarly[k]));
+
+        std::printf ("\n  %-10s", "late tgt");
+        for (size_t k = 0; k < drifting; ++k)
+            std::printf ("%7.1f", asDb (a.profileLate[k]));
+        std::printf ("\n");
+    }
+
     // What the modulation detector made of the target, and where it gave up.
     //
     // Detection is a stack of thresholds and any one of them can veto. Without
