@@ -3,6 +3,7 @@
 #include "dsp/Reverb.h"
 #include "dsp/Tables.h"
 
+#include <array>
 #include <cmath>
 #include <juce_dsp/juce_dsp.h>
 
@@ -266,6 +267,26 @@ float VitalExport::Mapping::levelToOscLevel (float linearLevel) noexcept
     return juce::jlimit (0.0f, 1.0f, std::sqrt (juce::jmax (0.0f, linearLevel)));
 }
 
+VitalExport::Mapping::LevelSwing
+VitalExport::Mapping::levelModulation (float level, float depth) noexcept
+{
+    LevelSwing out;
+    const auto amplitude = juce::jlimit (0.0f, 1.0f, level);
+    const auto d = juce::jlimit (0.0f, 0.95f, depth);
+
+    if (d <= 1.0e-4f)
+    {
+        out.level = levelToOscLevel (amplitude);
+        return out;
+    }
+
+    const auto r = std::sqrt ((1.0f + d) / (1.0f - d));
+    const auto k = (r - 1.0f) / (r + 1.0f);
+    out.level = std::sqrt (amplitude / juce::jmax (1.0e-6f, 1.0f - k * k));
+    out.amount = k * out.level;
+    return out;
+}
+
 float VitalExport::Mapping::cutoffToNote (float hz) noexcept
 {
     return juce::jlimit (8.0f, 136.0f, 69.0f + 12.0f * std::log2 (juce::jmax (hz, 1.0f) / 440.0f));
@@ -298,6 +319,41 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
 
     settings->setProperty ("polyphony", 8);
     settings->setProperty ("voice_transpose", 0);
+
+    // How much amplitude modulation each oscillator carries, before anything is
+    // written, because the level and the modulation amount have to be solved
+    // together -- see Mapping::levelModulation.
+    auto ampDepth = 0.0f;
+    for (int l = 0; l < kNumLfo; ++l)
+    {
+        const auto& lfo = patch.lfos[static_cast<size_t> (l)];
+        if (lfo.dest == LfoDest::amp && lfo.depth > 1.0e-4f)
+            ampDepth += lfo.depth;
+    }
+
+    std::array<Mapping::LevelSwing, kNumOsc> swing {};
+    auto headroom = 1.0f;
+    for (int i = 0; i < kNumOsc; ++i)
+    {
+        const auto& osc = patch.oscs[static_cast<size_t> (i)];
+        swing[static_cast<size_t> (i)] = Mapping::levelModulation (osc.level, ampDepth);
+        const auto peak = swing[static_cast<size_t> (i)].level
+                        + swing[static_cast<size_t> (i)].amount;
+        headroom = juce::jmax (headroom, peak);
+    }
+
+    // Vital's level control stops at one, so a patch whose level plus its
+    // modulation would go past it is scaled down as a whole and the master is
+    // given the difference back. Scaling one oscillator alone would change the
+    // balance between them, and the master cannot fix that per oscillator.
+    // Amplitude is the square of the stored value, so the master owes the
+    // square of the scale.
+    const auto levelScale = 1.0f / headroom;
+    for (auto& s : swing)
+    {
+        s.level *= levelScale;
+        s.amount *= levelScale;
+    }
 
     juce::Array<juce::var> wavetables;
     for (int i = 0; i < kNumOsc; ++i)
@@ -340,7 +396,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         const auto usesOwnEnvelope = on && osc.envEnabled;
         settings->setProperty ("osc_" + n + "_level",
                                usesOwnEnvelope ? 0.0f
-                                               : Mapping::levelToOscLevel (osc.level));
+                                               : swing[static_cast<size_t> (i)].level);
         if (usesOwnEnvelope)
             addAdsr (*settings, "env_" + juce::String (oscEnvIndex), osc.env);
         settings->setProperty ("osc_" + n + "_transpose", static_cast<float> (osc.semitones));
@@ -407,7 +463,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
 
         routings.push_back ({ "env_" + juce::String (kFirstOscEnvelope + i),
                               "osc_" + juce::String (i + 1) + "_level",
-                              juce::jlimit (0.0f, 1.0f, Mapping::levelToOscLevel (osc.level)),
+                              juce::jlimit (0.0f, 1.0f, swing[static_cast<size_t> (i)].level),
                               false });
     }
 
@@ -433,7 +489,9 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
                 for (int o = 0; o < kNumOsc; ++o)
                     if (patch.oscs[static_cast<size_t> (o)].enabled)
                         routings.push_back ({ source, "osc_" + juce::String (o + 1) + "_level",
-                                              lfo.depth, true });
+                                              swing[static_cast<size_t> (o)].amount
+                                                  * (ampDepth > 1.0e-4f ? lfo.depth / ampDepth : 0.0f),
+                                              true });
                 break;
             case LfoDest::cutoff:
                 routings.push_back ({ source, "filter_1_cutoff",
@@ -534,7 +592,8 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     // well under a decibel, and compensating for it was measured to overshoot:
     // Vital's dry falls far more slowly than `1 - wet`, so undoing that much
     // put the whole patch several decibels over this engine.
-    settings->setProperty ("volume", Mapping::gainToVolume (patch.masterLevel));
+    settings->setProperty ("volume",
+                           Mapping::gainToVolume (patch.masterLevel / (levelScale * levelScale)));
 
     // The delay, which had been dropped as silently as the reverb was.
     //

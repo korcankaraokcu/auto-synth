@@ -107,6 +107,26 @@ public:
         // renders as a half. Written linearly, a level of 0.3 arrived as 0.09.
         static float levelToOscLevel (float linearLevel) noexcept;
 
+        // The stored level and modulation amount that swing the amplitude by
+        // +/- `depth` around `level`.
+        //
+        // Needed because Vital's level control is *quadratic* and its
+        // modulation *adds* to the stored value. Writing the depth in
+        // directly, as the first version did, gets both wrong at once: the
+        // swing lands on the square of the parameter rather than on the
+        // amplitude, and the top of it clips against the control's ceiling of
+        // one. A fitted tremolo of 0.30 on a level of 0.95 lost its whole upper
+        // half that way and arrived about a decibel shallow.
+        //
+        // Solving it is arithmetic rather than taste. For an amplitude ratio of
+        // (1+d)/(1-d) between the peak and the trough, the stored values need a
+        // ratio of r = sqrt((1+d)/(1-d)), which fixes the amount as a fraction
+        // k = (r-1)/(r+1) of the level; the level then follows from wanting the
+        // *mean* amplitude to stay where it was. At a depth of zero this
+        // returns exactly `levelToOscLevel` and nothing.
+        struct LevelSwing { float level = 0.0f; float amount = 0.0f; };
+        static LevelSwing levelModulation (float level, float depth) noexcept;
+
         // Resonance is normalised 0 to 1; ours is a Q between 0.5 and 8.
         static float resonanceToNormalised (float q) noexcept;
 
