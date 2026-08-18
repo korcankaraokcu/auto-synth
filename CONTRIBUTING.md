@@ -797,6 +797,44 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### Vital's amplitude envelope is squared, and its power sign was backwards
+
+Reported as a sudden volume increase. Measured, it is the reverse: the note
+peaks and then falls much further than it should, so the peak stands out as a
+surge. Rendering the same patch both ways, this engine settles at 0.70 of its
+peak and Vital at 0.33, with a written sustain of 0.508.
+
+0.508 squared is 0.258, and that is the answer. Vital's voice multiplies by the
+amplitude envelope and by a squared amplitude control, so a sustain written
+linearly arrives squared. Writing its square root instead brings Vital to 0.65
+against this engine's 0.70 -- the same shape, from the same numbers.
+
+The same squaring explains an earlier complaint that the attack was too slow: a
+squared envelope rises more slowly than the one that was fitted, and Vital's
+onset read 0.14 where this engine's read 0.41.
+
+**And the segment powers had their sign backwards.** The comment claimed
+negative was the exponential direction; sweeping the attack power through -5,
+-2.5, 0, +2 and +4 and rendering each shows the segment getting slower as it
+goes negative and faster as it goes positive. It was assumed rather than
+measured, and it had been wrong since the exporter was written. Corrected for
+the attack, which is where it was verified; the decay and release keep their
+sign, because flipping those as well pushed the peak from a quarter of a second
+out to a full second and overshot.
+
+Contours through Vital against this engine, peak-normalised:
+
+| | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 | 1.50 | 2.00 | 2.50 |
+|---|---|---|---|---|---|---|---|---|
+| this engine | 0.41 | 1.00 | 0.92 | 0.73 | 0.70 | 0.70 | 0.69 | 0.67 |
+| Vital before | 0.14 | 1.00 | 0.90 | 0.53 | 0.41 | 0.34 | 0.33 | 0.32 |
+| Vital after | 0.36 | 1.00 | 0.92 | 0.74 | 0.69 | 0.65 | 0.64 | 0.62 |
+
+Worth noting what found this: not a metric. Every axis the diagnostic reports
+was inside tolerance while the preset was losing two thirds of its level after
+the attack, because all of them are shape-relative and none of them compares the
+*sustained* level to the peak. A listener heard it immediately.
+
 ### The filter sweep is measured over the sounding note
 
 Reported by ear, and precisely: the *filter* envelope's attack is absurdly slow

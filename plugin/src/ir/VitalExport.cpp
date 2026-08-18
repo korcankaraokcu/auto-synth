@@ -137,18 +137,26 @@ juce::var wavetableFor (const Oscillator& osc, const juce::String& name)
     return juce::var (table);
 }
 
+constexpr float kAttackPowerBoost = 4.0f;
+
 void addAdsr (juce::DynamicObject& settings, const juce::String& prefix, const Adsr& env)
 {
     const auto t = VitalExport::Mapping::secondsToEnvelope;
     settings.setProperty (prefix + "_attack", t (env.attack));
     settings.setProperty (prefix + "_decay", t (env.decay));
-    settings.setProperty (prefix + "_sustain", juce::jlimit (0.0f, 1.0f, env.sustain));
+    settings.setProperty (prefix + "_sustain",
+                          std::sqrt (juce::jlimit (0.0f, 1.0f, env.sustain)));
     settings.setProperty (prefix + "_release", t (env.release));
 
-    // Vital's power controls bend each segment; negative is the exponential
-    // direction. Ours is a single positive "toward exponential", so the sign is
-    // applied per segment.
-    settings.setProperty (prefix + "_attack_power", -env.attackCurve);
+    // Vital's power controls bend each segment, and the sign was backwards.
+    //
+    // Assumed rather than measured, and wrong: sweeping the attack power
+    // through -5, -2.5, 0, +2, +4 and rendering each shows the segment getting
+    // *slower* as it goes negative and faster as it goes positive, which is the
+    // opposite of what this wrote. Negative is the direction that dwells at the
+    // start; ours is a positive "toward exponential" meaning a fast start, so
+    // the sign carries straight across.
+    settings.setProperty (prefix + "_attack_power", env.attackCurve);
     settings.setProperty (prefix + "_decay_power", -env.curve);
     settings.setProperty (prefix + "_release_power", -env.curve);
 }
