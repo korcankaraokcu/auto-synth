@@ -66,12 +66,31 @@ public:
     // parameter is paid for in convergence speed.
     static std::vector<std::string> scopeFor (const Patch& patch);
 
-    // The three loss terms, reported separately.
+    // Six terms, and the last three are the reason the first three were not
+    // enough.
+    //
+    // Spectral, loudness and centroid distances are all averages over frames.
+    // A model can match every one of them and still get the *shape* of the note
+    // wrong, and that is not a hypothetical: refinement was measured moving the
+    // clarinet's rendered attack from 0.453 s to 0.267 against a target of
+    // 0.337 -- away from it -- while improving its own loss, because nothing it
+    // minimised had an opinion about when the note arrives.
+    //
+    // The same blindness accounts for the timbre drift and the tremolo depth,
+    // which is three of the four things a listener has objected to. Meanwhile
+    // `autosynth_diff` has been measuring all three on named axes whose
+    // verdicts have agreed with a listener repeatedly. So these are the
+    // diagnostic's own quantities, computed the same way, brought inside the
+    // objective: match the target's attack, its harmonic movement, and its
+    // wobble depth, rather than only the averages it happens to imply.
     struct Loss
     {
         double spectral = 0.0;
         double loudness = 0.0;
         double centroid = 0.0;
+        double attack = 0.0;    // seconds away from the target's attack
+        double drift = 0.0;     // decibels away from its harmonic movement
+        double wobble = 0.0;    // decibels away from its wobble depth
     };
 
     // The searchable range of one continuous parameter.

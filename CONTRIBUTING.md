@@ -797,6 +797,58 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### Trajectory terms in the objective
+
+Everything that resisted fitting today resisted in the same way. Refinement
+moved the clarinet's attack *away* from its target while improving its own loss.
+The wavetable ladder rejects the frames that carry movement because it minimises
+average profile error. The reverb matched the tail and got the balance during the
+note wrong. Four attempts at timbre drift, and the answer each time was that the
+thing being minimised was not the thing wanted.
+
+Spectral, loudness and centroid distances are all averages over frames. A model
+can match every one of them and still get the *shape* of the note wrong.
+Meanwhile `autosynth_diff` measures eleven named axes whose verdicts have agreed
+with a listener repeatedly, and the objective was using none of them.
+
+So three of them are now inside it: the attack in seconds, the harmonic movement
+in decibels, and the wobble depth in decibels, each as the distance between a
+measurement of the candidate and the same measurement of the target. The
+adaptive weighting already normalised each term by its value at the starting
+patch so that all of them contribute equally and the optimiser is asked to
+improve them proportionally; six terms extend that rule rather than change it.
+
+The drift is read off the spectrogram at multiples of the known fundamental
+rather than from tracked partials -- the diagnostic tracks partials, which is far
+too expensive to do a hundred and ninety-two times, and the harmonic bins are the
+same measurement to within the vibrato both signals share.
+
+**On the two recordings it fixes the two things that would not move.**
+
+| | before | after | target |
+|---|---|---|---|
+| clarinet attack | 0.256 s | **0.299 s** | 0.337 s |
+| clarinet timbre drift | 1.7 dB | **4.9 dB** | 4.3 dB |
+| violin attack | 0.299 s | **0.405 s** | 0.401 s |
+| violin timbre drift | 0.3 dB | **1.2 dB** | 1.6 dB |
+
+Attack and drift both read `ok` on both samples, where four attempts at the
+wavetable frames and two at the filter had left them 0.08 s and 2.6 dB out.
+
+**And it costs brightness.** The clarinet goes from 0.17 octaves dull to 0.38,
+the violin from `ok` to 0.21. That is not sample-specific: over twelve harness
+trials the centroid distance goes 0.533 to 0.676 and the loudness distance 3.27
+to 4.47 against an unchanged control. Asking for six things instead of three
+halves what each of the original three can claim, and brightness is what gave
+way.
+
+**The harness cannot see the win**, which is worth stating plainly: it scores
+spectral, loudness and centroid, so a change that trades those for trajectory
+accuracy reads there as a pure regression. Its scores got worse while the axes a
+listener has objected to got better. Teaching it to score the attack, the drift
+and the wobble is the obvious next thing, and until it does the two real
+recordings are the only place this change can be judged.
+
 ### Refining against Vital, and what it cost to try
 
 The reason to render through Vital at all was never the diagnostics. It was to

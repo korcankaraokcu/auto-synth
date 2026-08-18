@@ -22,7 +22,11 @@ constexpr double kDynamicRangeDb = 80.0;
 // Floors stop a term that begins near-perfect from acquiring an enormous weight
 // and dominating the search.
 const std::map<std::string, double> kFloors {
-    { "spectral", 0.10 }, { "loudness", 0.50 }, { "centroid", 0.05 }
+    { "spectral", 0.10 }, { "loudness", 0.50 }, { "centroid", 0.05 },
+    // The trajectory terms are errors against a measurement rather than
+    // distances, so their floors are the tolerance below which the diagnostic
+    // would call them equal: 30 ms of attack, and a decibel of movement.
+    { "attack", 0.030 }, { "drift", 1.00 }, { "wobble", 0.50 }
 };
 
 // Loudness in dB against a *fixed* reference, not against the signal's own peak.
@@ -64,14 +68,137 @@ float envelopePeak (const float* samples, int numSamples)
     return env.empty() ? 0.0f : *std::max_element (env.begin(), env.end());
 }
 
+// --- the trajectory measurements -------------------------------------------
+//
+// The diagnostic's own quantities, computed here the same way, so that a change
+// which improves the loss is a change that improves what the diagnostic reports
+// rather than something orthogonal to it.
+
+constexpr int kDriftHarmonics = 6;
+
+// Mean absolute change in the first few harmonics between the note's early and
+// late thirds, in decibels, each profile peak-normalised first so this is a
+// statement about balance rather than level.
+//
+// Read straight off the spectrogram at multiples of the known fundamental
+// instead of from tracked partials. The diagnostic tracks partials, which costs
+// far too much to do a hundred and ninety-two times, and the harmonic bins are
+// the same measurement to within the vibrato that both signals share.
+double harmonicDriftDb (const Stft::Result& spectrogram, double f0)
+{
+    if (f0 < 20.0 || spectrogram.numFrames < 6 || spectrogram.numBins < 4)
+        return 0.0;
+
+    const auto binNear = [&spectrogram] (double hz)
+    {
+        auto best = 1;
+        auto bestDistance = std::abs (spectrogram.frequencies[1] - hz);
+        for (int k = 2; k < spectrogram.numBins; ++k)
+        {
+            const auto distance = std::abs (spectrogram.frequencies[(size_t) k] - hz);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = k;
+            }
+        }
+        return best;
+    };
+
+    const auto profileOver = [&] (int from, int to)
+    {
+        std::array<double, kDriftHarmonics> profile {};
+        for (int h = 0; h < kDriftHarmonics; ++h)
+        {
+            const auto bin = binNear (f0 * (h + 1));
+            if (bin <= 0 || bin >= spectrogram.numBins)
+                continue;
+
+            double acc = 0.0;
+            for (int t = from; t < to; ++t)
+                acc += spectrogram.frame (t)[bin];
+            profile[(size_t) h] = acc / std::max (1, to - from);
+        }
+
+        const auto peak = *std::max_element (profile.begin(), profile.end());
+        if (peak > 1.0e-12)
+            for (auto& v : profile)
+                v /= peak;
+        return profile;
+    };
+
+    const auto third = std::max (1, spectrogram.numFrames / 3);
+    const auto early = profileOver (0, third);
+    const auto late = profileOver (spectrogram.numFrames - third, spectrogram.numFrames);
+
+    const auto asDb = [] (double v) { return 20.0 * std::log10 (std::max (v, 1.0e-4)); };
+    double drift = 0.0;
+    for (size_t h = 0; h < early.size(); ++h)
+        drift += std::abs (asDb (late[h]) - asDb (early[h]));
+    return drift / (double) early.size();
+}
+
+struct Contour
+{
+    double attackSeconds = 0.0;
+    double wobbleDb = 0.0;
+};
+
+Contour contourOf (const float* samples, int numSamples, double sampleRate, double gate)
+{
+    Contour out;
+    const auto env = Stft::loudnessEnvelope (samples, numSamples, 256);
+    if (env.size() < 8)
+        return out;
+
+    const auto fps = sampleRate / 256.0;
+    std::vector<float> times (env.size());
+    for (size_t i = 0; i < times.size(); ++i)
+        times[i] = static_cast<float> ((double) i / fps);
+
+    out.attackSeconds = EnvelopeFit::attackSeconds (env, times);
+
+    // Wobble as the rms deviation of the sustained middle in decibels, measured
+    // over the same window the diagnostic uses -- past the attack and short of
+    // the release, so neither reads as movement.
+    const auto lo = (size_t) std::max (0.0, juce::jlimit (0.0, gate * 0.7, 0.3) * fps);
+    const auto hi = (size_t) std::max (0.0, std::min ((double) env.size(), gate * 0.95 * fps));
+    if (hi <= lo + 8)
+        return out;
+
+    const auto peak = *std::max_element (env.begin(), env.end());
+    if (peak <= 1.0e-9f)
+        return out;
+
+    double mean = 0.0;
+    std::vector<double> db;
+    db.reserve (hi - lo);
+    for (auto i = lo; i < hi; ++i)
+    {
+        db.push_back (20.0 * std::log10 (std::max<double> (env[i], peak * 1.0e-4) / peak));
+        mean += db.back();
+    }
+    mean /= (double) db.size();
+
+    double sumSquares = 0.0;
+    for (const auto v : db)
+        sumSquares += (v - mean) * (v - mean);
+    out.wobbleDb = std::sqrt (sumSquares / (double) db.size());
+    return out;
+}
+
 struct TargetFeatures
 {
     std::vector<Stft::Result> spectrograms;
     std::vector<float> loudnessDb;
     std::vector<float> centroidLog2;
     float loudnessPeak = 0.0f;
+    double attackSeconds = 0.0;
+    double driftDb = 0.0;
+    double wobbleDb = 0.0;
 
-    TargetFeatures (const float* samples, int numSamples, double sampleRate)
+    TargetFeatures (const float* samples, int numSamples, double sampleRate,
+                    double gate, double f0)
     {
         loudnessPeak = envelopePeak (samples, numSamples);
         for (auto scale : kSearchScales)
@@ -83,11 +210,16 @@ struct TargetFeatures
         centroidLog2.resize (centroid.size());
         for (size_t i = 0; i < centroid.size(); ++i)
             centroidLog2[i] = static_cast<float> (std::log2 (std::max (centroid[i], 20.0f)));
+
+        const auto contour = contourOf (samples, numSamples, sampleRate, gate);
+        attackSeconds = contour.attackSeconds;
+        wobbleDb = contour.wobbleDb;
+        driftDb = harmonicDriftDb (spectrograms.back(), f0);
     }
 };
 
 Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
-                             int numSamples, double sampleRate)
+                             int numSamples, double sampleRate, double gate, double f0)
 {
     Refine::Loss loss;
 
@@ -132,6 +264,14 @@ Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
         loss.centroid += std::abs (target.centroidLog2[i]
                                    - static_cast<float> (std::log2 (std::max (centroid[i], 20.0f))));
     loss.centroid /= std::max<size_t> (centroidCount, 1);
+
+    // The trajectory terms. Each is the distance between a measurement of the
+    // candidate and the same measurement of the target, in the unit the
+    // diagnostic reports it in.
+    const auto contour = contourOf (samples, numSamples, sampleRate, gate);
+    loss.attack = std::abs (contour.attackSeconds - target.attackSeconds);
+    loss.wobble = std::abs (contour.wobbleDb - target.wobbleDb);
+    loss.drift = std::abs (harmonicDriftDb (spectrogram, f0) - target.driftDb);
 
     return loss;
 }
@@ -652,7 +792,7 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
         return out;
     };
 
-    const TargetFeatures features (target, numSamples, sampleRate);
+    const TargetFeatures features (target, numSamples, sampleRate, gate, patch.rootHz);
 
     Engine engine;
     engine.prepare (sampleRate, 512);
@@ -662,13 +802,15 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
         if (options.renderer)
         {
             const auto rendered = options.renderer (candidate, duration, gate);
-            return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate);
+            return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate,
+                                   gate, candidate.rootHz);
         }
 
         engine.setPatch (candidate);
         juce::AudioBuffer<float> buffer;
         engine.renderOffline (buffer, candidate.rootHz, duration, gate);
-        return lossComponents (features, buffer.getReadPointer (0), buffer.getNumSamples(), sampleRate);
+        return lossComponents (features, buffer.getReadPointer (0), buffer.getNumSamples(),
+                               sampleRate, gate, candidate.rootHz);
     };
 
     // Adaptive weights: each term normalised by its own value at the starting
@@ -687,11 +829,15 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     const auto wSpectral = weightFor (start.spectral, "spectral");
     const auto wLoudness = weightFor (start.loudness, "loudness");
     const auto wCentroid = weightFor (start.centroid, "centroid");
+    const auto wAttack = weightFor (start.attack, "attack");
+    const auto wDrift = weightFor (start.drift, "drift");
+    const auto wWobble = weightFor (start.wobble, "wobble");
 
     const auto combine = [&] (const Loss& loss)
     {
         return (wSpectral * loss.spectral + wLoudness * loss.loudness
-                + wCentroid * loss.centroid) / 3.0;
+                + wCentroid * loss.centroid + wAttack * loss.attack
+                + wDrift * loss.drift + wWobble * loss.wobble) / 6.0;
     };
 
     CmaEs::Options cmaOptions;
