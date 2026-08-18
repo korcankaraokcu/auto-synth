@@ -84,6 +84,14 @@ private:
     Svf sendFilter;
     juce::Random noise;
 
+    // Each LFO's rate drift: where the smoothing is between two held random
+    // targets, and the targets themselves. Its own generator so that changing
+    // the wander cannot shift the noise bed's realisation, which would make
+    // every fitted level move for an unrelated reason.
+    struct WanderState { float position = 0.0f; float from = 0.0f; float to = 0.0f; };
+    std::array<WanderState, kNumLfo> wander {};
+    juce::Random wanderNoise;
+
     int midiNote = 60;
     float velocity = 1.0f;
     bool active = false;

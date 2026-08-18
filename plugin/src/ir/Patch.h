@@ -166,6 +166,22 @@ struct Lfo
     float depth = 0.0f;
     float delay = 0.0f;
     float phase = 0.0f;
+
+    // How far this LFO's own rate drifts, in octaves, and how fast it drifts.
+    //
+    // A property of the LFO rather than a second LFO pointed at it, which is
+    // how this was expressed before and why it almost never survived: with two
+    // slots, spending one on a modulator meant losing a violin's tremolo to
+    // smear its vibrato, and the fitter rightly declined that trade nearly
+    // every time. Vital's random LFOs are separate from its eight ordinary
+    // ones, so there the wander is free -- expressing it as a field rather than
+    // a slot is what lets that be true here too.
+    //
+    // Measured, not searched. `Modulation::detectWander` reports both numbers
+    // and refinement leaves them alone, on the same rule as every other
+    // measurement.
+    float rateWander = 0.0f;
+    float wanderRateHz = 0.0f;
 };
 
 // Named DelayParams rather than Delay so the struct and the `Delay` DSP class

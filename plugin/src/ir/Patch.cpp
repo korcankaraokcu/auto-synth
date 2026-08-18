@@ -170,6 +170,8 @@ Patch Patch::fromJson (const juce::var& json)
         out.shape = parseEnum (getString (v, "shape", "sine"), kLfoShapeNames, LfoShape::sine);
         out.dest = parseEnum (getString (v, "dest", "none"), kLfoDestNames, LfoDest::none);
         out.rateHz = getFloat (v, "rate_hz", out.rateHz);
+        out.rateWander = getFloat (v, "rate_wander", out.rateWander);
+        out.wanderRateHz = getFloat (v, "wander_rate_hz", out.wanderRateHz);
         out.depth = getFloat (v, "depth", out.depth);
         out.delay = getFloat (v, "delay", out.delay);
         out.phase = getFloat (v, "phase", out.phase);
@@ -293,6 +295,8 @@ juce::String Patch::toJson() const
         obj->setProperty ("shape", kLfoShapeNames[static_cast<size_t> (l.shape)]);
         obj->setProperty ("dest", kLfoDestNames[static_cast<size_t> (l.dest)]);
         obj->setProperty ("rate_hz", l.rateHz);
+        obj->setProperty ("rate_wander", l.rateWander);
+        obj->setProperty ("wander_rate_hz", l.wanderRateHz);
         obj->setProperty ("depth", l.depth);
         obj->setProperty ("delay", l.delay);
         obj->setProperty ("phase", l.phase);

@@ -17,6 +17,11 @@ namespace
 // is exactly enough for those three plus one per oscillator.
 constexpr int kFirstOscEnvelope = 4;
 
+// Vital has four random LFOs, and its lfo_N_frequency control spans -7 to 9 --
+// sixteen octaves -- which is what a drift in octaves is expressed against.
+constexpr int kNumRandomLfos = 4;
+constexpr float kLfoRateSpan = 16.0f;
+
 // One frame of a Vital wavetable: 2048 samples, base64 of little-endian float.
 //
 // Built from the harmonics rather than resampled from our own 4096-point table.
@@ -433,7 +438,39 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         settings->setProperty ("lfo_" + n + "_phase", juce::jlimit (0.0f, 1.0f, lfo.phase));
     }
 
+    // Rate drift, as one of Vital's random LFOs.
+    //
+    // These sit outside the eight ordinary LFOs and cost none of them, which is
+    // the whole reason the wander is a field on an LFO here rather than a slot
+    // spent pointing a second LFO at the first. Style is left at Vital's
+    // default, which is the smooth one; a sample-and-hold would step the rate
+    // rather than drift it.
+    //
+    // The amount is the drift in octaves over the frequency control's own span
+    // of sixteen, and bipolar because a rate that only ever rose would not be
+    // wander, it would be a ramp.
+    auto randomsUsed = 0;
+
     std::vector<Routing> routings;
+
+    for (int i = 0; i < kNumLfo && randomsUsed < kNumRandomLfos; ++i)
+    {
+        const auto& lfo = patch.lfos[static_cast<size_t> (i)];
+        if (lfo.dest == LfoDest::none || lfo.depth <= 1.0e-4f)
+            continue;
+        if (lfo.rateWander <= 1.0e-4f || lfo.wanderRateHz <= 1.0e-4f)
+            continue;
+
+        const auto r = juce::String (++randomsUsed);
+        settings->setProperty ("random_" + r + "_sync", 0.0f);   // free-running, rate in Hz
+        settings->setProperty ("random_" + r + "_frequency",
+                               Mapping::hzToLfoRate (lfo.wanderRateHz));
+
+        routings.push_back ({ "random_" + r,
+                              "lfo_" + juce::String (i + 1) + "_frequency",
+                              juce::jlimit (0.0f, 1.0f, lfo.rateWander / kLfoRateSpan),
+                              true });
+    }
 
     // The filter envelope, which was written and then left dangling: env_2 held
     // the right shape and nothing connected it to anything, so every export

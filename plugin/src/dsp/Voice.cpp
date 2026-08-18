@@ -113,6 +113,17 @@ void Voice::noteOn (int note, float vel)
     // Seeded from the note, so simultaneous notes still get different noise.
     noise.setSeed (0x9e3779b9LL + note);
 
+    // Seeded from the note like the noise bed, so a render is reproducible --
+    // an objective that returns a different number for the same patch is worse
+    // than a slow one.
+    wanderNoise.setSeed (0x85ebca6bLL + note);
+    for (auto& state : wander)
+    {
+        state.position = 0.0f;
+        state.from = 0.0f;
+        state.to = wanderNoise.nextFloat() * 2.0f - 1.0f;
+    }
+
     for (auto& osc : oscs)
     {
         osc.env.noteOn();
@@ -189,6 +200,35 @@ void Voice::render (float* out, float* send, int numSamples)
                 rateScale[target] = std::pow (2.0f, value);
             else
                 depthScale[target] = juce::jlimit (0.0f, 2.0f, 1.0f + value);
+        }
+
+        // The LFO's own rate drift, which is a property of the LFO rather than
+        // a slot spent on it -- see Lfo::rateWander. Smoothed between held
+        // random targets rather than stepped, because a player's wobble speeds
+        // up and slows down rather than jumping, and a step here is audible as
+        // a click in the vibrato.
+        for (size_t l = 0; l < lfos.size(); ++l)
+        {
+            const auto& spec = patch.lfos[l];
+            if (spec.rateWander <= 1.0e-4f || spec.wanderRateHz <= 1.0e-4f)
+                continue;
+
+            auto& state = wander[l];
+            const auto step = static_cast<float> (spec.wanderRateHz / juce::jmax (1.0, sampleRate));
+            state.position += step;
+            while (state.position >= 1.0f)
+            {
+                state.position -= 1.0f;
+                state.from = state.to;
+                state.to = wanderNoise.nextFloat() * 2.0f - 1.0f;
+            }
+
+            // Cosine rather than linear between targets, so the turns are
+            // smooth in the first derivative as well as continuous.
+            const auto blend = 0.5f - 0.5f * std::cos (state.position
+                                                       * juce::MathConstants<float>::pi);
+            const auto value = state.from + (state.to - state.from) * blend;
+            rateScale[l] *= std::pow (2.0f, value * spec.rateWander);
         }
 
         for (size_t l = 0; l < lfos.size(); ++l)

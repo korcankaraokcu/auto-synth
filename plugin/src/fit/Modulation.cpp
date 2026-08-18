@@ -593,7 +593,7 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
     for (int i = 0; i < std::min (maxCount, static_cast<int> (independent.size())); ++i)
         out.push_back (toLfo (independent[static_cast<size_t> (i)]));
 
-    // A spare slot goes to making the strongest modulation *human*.
+    // The strongest modulation is made *human*, whether or not a slot is spare.
     //
     // Measured on a violin, the player's vibrato period wanders by 0.68 of an
     // octave across fifteen cycles while the fitted LFO's wanders by 0.03 --
@@ -601,15 +601,13 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
     // mechanical, and it is not depth: the same fit measured *shallower* than
     // the recording and was still described as having more vibrato.
     //
-    // An LFO pointed at another LFO's rate spreads that spike back out, and
-    // unlike a random walk it leaves a patch a person can read and edit.
-    //
-    // Only ever with a slot nobody else wanted. With two slots a modulator
-    // costs a whole modulation, and losing a violin's tremolo to smear its
-    // vibrato is not obviously a trade worth making -- so it is not made here.
-    // That is the current limit of the feature, not a judgement that the trade
-    // is wrong.
-    if (! out.empty() && static_cast<int> (out.size()) < maxCount)
+    // This used to run only when a slot happened to be spare, because the
+    // wander was expressed as a second LFO pointed at the first one's rate. On
+    // both library samples both slots are taken, so it never ran on either of
+    // them -- a feature measured, built and then silently inapplicable to the
+    // only two recordings it was written for. It is now a field on the LFO that
+    // drifts, which costs nothing, so the gate is gone.
+    if (! out.empty())
     {
         const auto& strongest = independent.front();
         const auto wander = detectWander (strongest.dest == LfoDest::pitch
@@ -621,15 +619,25 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
 
         if (wander.found)
         {
-            Lfo modulator;
-            modulator.shape = LfoShape::sine;
-            modulator.dest = LfoDest::lfoRate;
-            // Slow against the wobble it drives: a modulator near the carrier's
-            // own rate makes a second tone rather than a drifting one.
-            modulator.rateHz = static_cast<float> (juce::jlimit (0.05, 20.0,
-                                                                 strongest.rateHz * 0.25));
-            modulator.depth = static_cast<float> (juce::jlimit (0.0, 1.0, wander.octaves));
-            out.insert (out.begin(), modulator);
+            // Recorded on the LFO that drifts, rather than spent as a slot.
+            //
+            // This used to insert a second LFO pointed at the first one's rate,
+            // so wander could only be described when a slot happened to be
+            // spare -- and with two of them it almost never was, which left the
+            // feature measured, built and hardly ever used. Vital's random LFOs
+            // sit outside its eight ordinary ones and cost nothing, so the
+            // constraint was this engine's shape rather than the target's.
+            for (auto& lfo : out)
+            {
+                if (lfo.dest != strongest.dest)
+                    continue;
+
+                lfo.rateWander = static_cast<float> (juce::jlimit (0.0, 2.0, wander.octaves));
+                // Slow against the wobble it drives: drift near the carrier's
+                // own rate makes a second tone rather than a drifting one.
+                lfo.wanderRateHz = static_cast<float> (juce::jlimit (0.02, 20.0, wander.rateHz));
+                break;
+            }
         }
     }
 
