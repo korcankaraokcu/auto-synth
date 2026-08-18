@@ -62,8 +62,20 @@ public:
     // the trajectory's own floor -- as an earlier version did -- inherits the
     // unidentifiable offset and lands the filter octaves away from where it
     // belongs.
+    // `soundingFrames` bounds the part of the trajectory the sweep is measured
+    // over; the shape still covers every frame so the release has something to
+    // be fitted from. Zero means "all of it".
+    //
+    // A cutoff estimate after the note stops is not an estimate of anything --
+    // with nothing left to measure it falls to its floor, the fundamental -- and
+    // on a four second render of a three second note that floor is the last
+    // quarter of the trajectory. That is enough to put the tenth percentile
+    // inside the silence, which measured the clarinet's sweep from the floor of
+    // a dead note up to a live one: a base cutoff of 295 Hz, *below* its own
+    // fundamental, opening three octaves over two seconds. Heard, correctly, as
+    // a filter crawling open across most of the note.
     static EnvSplit trajectoryToEnv (const std::vector<float>& cutoffHz, double anchorHz,
-                                     float minOctaves = 0.25f);
+                                     float minOctaves = 0.25f, int soundingFrames = 0);
 };
 
 } // namespace autosynth

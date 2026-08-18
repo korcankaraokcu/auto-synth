@@ -217,7 +217,8 @@ std::vector<float> FilterFit::deconvolve (const std::vector<float>& H,
 }
 
 FilterFit::EnvSplit FilterFit::trajectoryToEnv (const std::vector<float>& cutoffHz,
-                                                double anchorHz, float minOctaves)
+                                                double anchorHz, float minOctaves,
+                                                int soundingFrames)
 {
     EnvSplit split;
     split.baseCutoffHz = static_cast<float> (anchorHz);
@@ -249,7 +250,11 @@ FilterFit::EnvSplit FilterFit::trajectoryToEnv (const std::vector<float>& cutoff
     //
     // The tenth and ninetieth percentiles describe where the cutoff actually
     // spends its time and are unmoved by a couple of bad frames.
-    auto sorted = u;
+    // Percentiles over the sounding note only -- see the declaration.
+    const auto counted = soundingFrames > 0
+                           ? juce::jlimit<size_t> (1, u.size(), (size_t) soundingFrames)
+                           : u.size();
+    std::vector<double> sorted (u.begin(), u.begin() + (std::ptrdiff_t) counted);
     std::sort (sorted.begin(), sorted.end());
     const auto at = [&sorted] (double q)
     {

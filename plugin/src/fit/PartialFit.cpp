@@ -600,7 +600,11 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     const auto anchor = WaveformFit::matchWithCutoff (profile, dominant.f0, sampleRate);
     const auto trajectory = FilterFit::estimateCutoffTrajectory (
         dominant.H, dominant.numHarmonics, dominant.numFrames, dominant.f0, sampleRate);
-    const auto split = FilterFit::trajectoryToEnv (trajectory.cutoffHz, anchor.cutoffHz);
+    const auto soundingFrames = gateTime > 0.0
+                                  ? (int) std::ceil (gateTime * sampleRate / options.hop)
+                                  : 0;
+    const auto split = FilterFit::trajectoryToEnv (trajectory.cutoffHz, anchor.cutoffHz,
+                                                   0.25f, soundingFrames);
 
     patch.filter.type = FilterType::lowpass;
     patch.filter.cutoffHz = juce::jlimit (30.0f, 18000.0f, split.baseCutoffHz);

@@ -797,6 +797,40 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### The filter sweep is measured over the sounding note
+
+Reported by ear, and precisely: the *filter* envelope's attack is absurdly slow
+against the recording. The numbers agree and say why. Before refinement touches
+it the clarinet fits an attack of 2.00 s -- pinned at its maximum -- sweeping
+3.13 octaves from a base cutoff of **295 Hz**, which is below its own
+fundamental at 441 Hz. The filter starts almost shut and crawls open across two
+thirds of the note.
+
+The base is contaminated. A cutoff estimate after the note stops is not an
+estimate of anything: with nothing left to measure it falls to its floor, the
+fundamental, and on a four second render of a three second note that floor is
+the last quarter of the trajectory. A quarter is enough to put the tenth
+percentile inside the silence, so the sweep was measured from the floor of a
+dead note up to a live one.
+
+Confined to the sounding note the clarinet's base becomes 1034 Hz -- above its
+fundamental, where a lowpass on a clarinet belongs -- and the sweep 1.68
+octaves instead of 4.00.
+
+**It costs the clarinet what the exaggeration was buying.** Brightness goes from
+`ok` to 0.28 octaves dull, timbre drift from `ok` to 1.87 out, wobble from `ok`
+to 0.99. The violin is unmoved, at seven of eight axes. This was tried once
+before and reverted for exactly those regressions; it is kept this time because
+the earlier revert was a choice to keep a number rather than a sound, and
+because a base cutoff below the fundamental is not defensible whatever it
+scores.
+
+That is the fourth time in one session an error has turned out to be propping up
+another, and the remedy is not a better filter: today's own measurement says the
+clarinet's brightening is *source* movement, since its second harmonic sits
+below the estimated cutoff throughout and still rises five decibels. The drift
+has to come back from the wavetable frames, which is where it belongs.
+
 ### An envelope's full level is what the note holds, not its loudest frame
 
 Reported by ear and long-standing: both envelopes rise too slowly and then drop
