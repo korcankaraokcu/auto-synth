@@ -103,25 +103,26 @@ Args parseArgs (int argc, char* argv[])
     return out;
 }
 
-// The usual install locations, system first. JUCE's own scan would find these
-// too, but it wants a directory to walk and a callback to wait on; the plugin
-// is either at one of two paths or the user passes --plugin.
+// Wherever this platform keeps its VST3s, asked rather than assumed.
+//
+// The first version listed the two Windows paths literally, which worked here
+// and would have found nothing on any other machine. JUCE already knows the
+// standard locations for each platform -- and picks up any the user has
+// configured -- so the list is its business rather than this file's.
 juce::File findVital (const juce::String& override)
 {
     if (override.isNotEmpty())
         return juce::File::getCurrentWorkingDirectory().getChildFile (override);
 
-    const juce::File candidates[] = {
-        juce::File ("C:/Program Files/Common Files/VST3/Vital.vst3"),
-        juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-            .getChildFile ("Programs/Common/VST3/Vital.vst3"),
-        juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
-            .getChildFile ("VST3/Vital.vst3"),
-    };
+    juce::VST3PluginFormat format;
+    const auto search = format.getDefaultLocationsToSearch();
 
-    for (const auto& file : candidates)
-        if (file.exists())
-            return file;
+    for (int i = 0; i < search.getNumPaths(); ++i)
+    {
+        const auto candidate = search[i].getChildFile ("Vital.vst3");
+        if (candidate.exists())
+            return candidate;
+    }
 
     return {};
 }
