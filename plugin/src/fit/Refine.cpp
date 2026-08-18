@@ -410,7 +410,19 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
         paths.push_back (p + ".pulse_width");
         paths.push_back (p + ".unison_detune");
         paths.push_back (p + ".wave_morph");
-        paths.push_back (p + ".reverb_send");
+
+        // Not `reverb_send`. Vital sends an oscillator somewhere -- a filter,
+        // the effects bus, straight out -- and has no per-oscillator send
+        // *level*, so a value searched here could never reach the preset. A
+        // parameter the deliverable cannot carry is one the optimiser should
+        // not spend its budget on: the objective is flat along that direction
+        // once the renderer is Vital, and merely misleading before then.
+        //
+        // Nor the oscillator's own filter, below, for the same reason plus a
+        // stronger one -- analysis never enables it. `PartialFit` leaves
+        // `filterEnabled` false on every path, so the only patches that ever
+        // had one came from this project's own random sampler and from a hand
+        // switch in the editor.
         // The wavetable is absent on purpose, frames and position alike. The
         // frames are a measurement, and the position is the trajectory that
         // measurement was taken along -- refining either would be re-deciding
@@ -421,14 +433,6 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
             for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
                 paths.push_back (p + ".env." + leaf);
 
-        if (osc.filterEnabled)
-        {
-            paths.push_back (p + ".filter.cutoff_hz");
-            paths.push_back (p + ".filter.resonance");
-            paths.push_back (p + ".filter.env_amount");
-            for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
-                paths.push_back (p + ".filter.env." + leaf);
-        }
     }
 
     for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })

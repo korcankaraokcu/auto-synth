@@ -11,6 +11,11 @@ namespace autosynth
 namespace
 {
 
+// env_1 is the voice amplitude, env_2 the filter and env_3 the wavetable
+// position, so the per-oscillator envelopes start at four. Vital has six, which
+// is exactly enough for those three plus one per oscillator.
+constexpr int kFirstOscEnvelope = 4;
+
 // One frame of a Vital wavetable: 2048 samples, base64 of little-endian float.
 //
 // Built from the harmonics rather than resampled from our own 4096-point table.
@@ -315,7 +320,29 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         // renders are identical.
         settings->setProperty ("osc_" + n + "_random_phase", 0.0f);
         settings->setProperty ("osc_" + n + "_phase", 0.0f);
-        settings->setProperty ("osc_" + n + "_level", Mapping::levelToOscLevel (osc.level));
+        // The oscillator's own amplitude envelope, when it has one.
+        //
+        // env_1 is the voice's amplitude and applies to everything; this is the
+        // per-oscillator envelope on top of it, and Vital has six of them
+        // against this engine's need for three, so each gets its own. The level
+        // itself drops to zero and the envelope's *amount* carries it, because
+        // an envelope that scales an oscillator has to be able to silence it --
+        // modulation adds to the parameter rather than multiplying it.
+        //
+        // The shape is not identical. Vital's level control is quadratic, so an
+        // envelope driving it produces an amplitude following the square of the
+        // curve where this engine follows the curve. That matters less than it
+        // sounds: what the export owes the fitter is that the parameter *has an
+        // effect*, so the optimiser can use it. Exact shape parity is this
+        // engine's problem, and refinement rendering through Vital absorbs the
+        // difference by adjusting the times and powers.
+        const auto oscEnvIndex = kFirstOscEnvelope + i;
+        const auto usesOwnEnvelope = on && osc.envEnabled;
+        settings->setProperty ("osc_" + n + "_level",
+                               usesOwnEnvelope ? 0.0f
+                                               : Mapping::levelToOscLevel (osc.level));
+        if (usesOwnEnvelope)
+            addAdsr (*settings, "env_" + juce::String (oscEnvIndex), osc.env);
         settings->setProperty ("osc_" + n + "_transpose", static_cast<float> (osc.semitones));
         settings->setProperty ("osc_" + n + "_tune", Mapping::centsToTune (osc.cents));
         settings->setProperty ("osc_" + n + "_unison_voices",
@@ -367,6 +394,22 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
                               juce::jlimit (-1.0f, 1.0f,
                                             patch.filter.envAmount * 12.0f / 128.0f),
                               false });
+
+    // Each oscillator's own envelope, driving its level. The amount is the
+    // level the oscillator would otherwise have sat at, because the level
+    // itself was written as zero: modulation adds, so the envelope has to
+    // supply the whole of it for a closed envelope to mean silence.
+    for (int i = 0; i < kNumOsc; ++i)
+    {
+        const auto& osc = patch.oscs[static_cast<size_t> (i)];
+        if (! osc.enabled || osc.level <= 1.0e-4f || ! osc.envEnabled)
+            continue;
+
+        routings.push_back ({ "env_" + juce::String (kFirstOscEnvelope + i),
+                              "osc_" + juce::String (i + 1) + "_level",
+                              juce::jlimit (0.0f, 1.0f, Mapping::levelToOscLevel (osc.level)),
+                              false });
+    }
 
     for (int i = 0; i < kNumLfo; ++i)
     {
@@ -492,6 +535,27 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     // Vital's dry falls far more slowly than `1 - wet`, so undoing that much
     // put the whole patch several decibels over this engine.
     settings->setProperty ("volume", Mapping::gainToVolume (patch.masterLevel));
+
+    // The delay, which had been dropped as silently as the reverb was.
+    //
+    // Vital states the time as a frequency: the control is exponential over
+    // -2..9, so the delay is one over two to that power, and `delay_sync` has
+    // to say "not tempo" or the number is read as a division instead.
+    const auto delayOn = patch.delay.enabled && patch.delay.mix > 1.0e-4f;
+    settings->setProperty ("delay_on", delayOn ? 1.0f : 0.0f);
+    if (delayOn)
+    {
+        settings->setProperty ("delay_dry_wet", juce::jlimit (0.0f, 1.0f, patch.delay.mix));
+        settings->setProperty ("delay_feedback",
+                               juce::jlimit (-1.0f, 1.0f, patch.delay.feedback));
+        settings->setProperty ("delay_sync", 0.0f);
+        settings->setProperty ("delay_aux_sync", 0.0f);
+
+        const auto seconds = juce::jmax (1.0f / 512.0f, patch.delay.time);
+        const auto frequency = juce::jlimit (-2.0f, 9.0f, (float) -std::log2 (seconds));
+        settings->setProperty ("delay_frequency", frequency);
+        settings->setProperty ("delay_aux_frequency", frequency);
+    }
 
     const auto hasNoise = patch.noiseLevel > 1.0e-4f;
     settings->setProperty ("sample", sampleBlock (hasNoise));

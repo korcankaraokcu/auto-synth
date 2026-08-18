@@ -212,6 +212,8 @@ bool affectsAudio (const Patch& patch, const std::string& path)
 
         if (path.find (".filter.") != std::string::npos)
         {
+            // Never generated any more, so this is dead in practice; kept
+            // correct in case a hand-made patch is ever scored.
             if (! osc.filterEnabled || osc.filter.type == FilterType::off)
                 return false;
             // The filter envelope only matters if it is routed anywhere.
@@ -220,8 +222,16 @@ bool affectsAudio (const Patch& patch, const std::string& path)
             return true;
         }
 
+        // Not the reverb send, and not the oscillator's own filter above.
+        //
+        // Both affect this engine's audio, so identifiability is not the reason
+        // -- the reason is that refinement is no longer allowed to search
+        // either, because a Vital preset cannot carry them. Scoring a parameter
+        // nothing is permitted to move reports the distance between two random
+        // draws and puts it in the worst-recovered list, where it reads as a
+        // fitter failure and crowds out the real ones.
         if (endsWith (".reverb_send"))
-            return patch.reverb.enabled && patch.reverb.level > 1.0e-3f;
+            return false;
 
         return true; // cents, level
     }
@@ -381,8 +391,18 @@ Patch Recovery::randomPatch (juce::Random& rng)
         osc.semitones = rng.nextInt ({ -24, 25 });
         osc.unisonVoices = rng.nextInt ({ 1, kMaxUnison + 1 });
         osc.envEnabled = rng.nextBool();
-        osc.filterEnabled = rng.nextBool();
-        osc.filter.type = pick<FilterType> (rng, 4);
+
+        // No per-oscillator filter. The engine has one and the editor exposes
+        // it, but `PartialFit` never switches it on, so a target carrying one
+        // asks the fitter to recover something it has no way to emit -- and the
+        // Vital preset has no way to carry it either, Vital having two filters
+        // and a routing choice rather than one filter per oscillator.
+        //
+        // Generating them made the harness measure a feature nothing in the
+        // pipeline produces. It showed up as a long tail of unrecoverable
+        // filter parameters, and it was most of why the same run through Vital
+        // looked so much worse: those were precisely the parameters the export
+        // dropped.
     }
 
     // At least one oscillator must sound, or the target is silence and the

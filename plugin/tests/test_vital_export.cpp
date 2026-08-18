@@ -10,11 +10,13 @@
 #include "Helpers.h"
 
 #include "dsp/Tables.h"
+#include "fit/Refine.h"
 #include "ir/VitalExport.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <set>
 
 using namespace autotest;
@@ -522,4 +524,94 @@ TEST_CASE ("the mappings invert Vital's declared curves", "[vital]")
     // where the -6 dB export makeup shows up honestly rather than as a fudge.
     const auto db = readBack ("volume", M::gainToVolume (1.0f));
     CHECK (db == Catch::Approx (M::kExportMakeupDb).margin (0.05));
+}
+
+TEST_CASE ("every parameter the fitter can search reaches the preset", "[vital]")
+{
+    // The guard for a whole class of silent loss.
+    //
+    // The recovery harness found this the expensive way: run with Vital as the
+    // renderer, oscillator counting fell from 83% to 58% and the control
+    // distance nearly halved, which said the targets had become *less varied*
+    // than the same random patches rendered here. The cause was that `Patch`
+    // carried a filter, an envelope and a reverb send per oscillator and the
+    // exporter wrote none of them. Those parameters were unrecoverable by
+    // construction -- nothing in the rendered audio depended on them -- and
+    // refinement spent its budget searching directions the renderer ignored.
+    //
+    // The rule this pins down: if the fitter is allowed to search a parameter,
+    // the preset has to carry it. Anything else is an optimiser working on a
+    // flat objective and a preset that quietly means something else.
+    auto patch = simplePatch (Waveform::saw);
+
+    // Everything switched on, so `scopeFor` returns the widest set it ever
+    // would. A parameter out of scope is not a failure here -- it is one the
+    // fitter would not search either.
+    patch.noiseLevel = 0.3f;
+    patch.reverb = { true, 0.5f, 0.5f, 0.3f };
+    patch.delay = { true, 0.25f, 0.35f, 0.4f };
+    patch.filter.type = autosynth::FilterType::lowpass;
+    patch.filter.envAmount = 1.0f;
+
+    for (int i = 0; i < autosynth::kNumOsc; ++i)
+    {
+        auto& osc = patch.oscs[(size_t) i];
+        osc.enabled = true;
+        osc.level = 0.5f;
+        osc.unisonVoices = 3;
+        osc.unisonDetune = 12.0f;
+        // Pulse on one side of the morph, so pulse width is a parameter that
+        // genuinely changes the wavetable rather than one that cannot.
+        osc.waveform = Waveform::pulse;
+        osc.waveformB = Waveform::square;
+        osc.waveMorph = 0.4f;
+        osc.pulseWidth = 0.35f;
+        osc.numFrames = 3;
+        osc.framePositionEnvAmount = 0.5f;
+        osc.reverbSend = 0.3f;
+        osc.envEnabled = true;
+        osc.filterEnabled = true;
+        osc.filter.type = autosynth::FilterType::lowpass;
+        osc.filter.cutoffHz = 2000.0f + 500.0f * i;
+        osc.filter.envAmount = 0.8f;
+    }
+
+    patch.lfos[0].dest = autosynth::LfoDest::pitch;
+    patch.lfos[0].depth = 0.4f;
+    patch.lfos[1].dest = autosynth::LfoDest::cutoff;
+    patch.lfos[1].depth = 0.4f;
+
+    const auto baseline = VitalExport::toJson (patch, "test");
+    const auto specs = autosynth::Refine::continuousSpecs();
+    const auto scope = autosynth::Refine::scopeFor (patch);
+
+    std::vector<std::string> silent;
+    for (const auto& path : scope)
+    {
+        const auto spec = std::find_if (specs.begin(), specs.end(),
+                                        [&path] (const auto& s) { return s.path == path; });
+        if (spec == specs.end())
+            continue;
+
+        // A value far from the current one but inside the declared range, so a
+        // parameter that *is* carried cannot fail this by moving too little.
+        const auto current = autosynth::Refine::parameterValue (patch, path);
+        const auto moved = std::abs (current - spec->lo) > std::abs (current - spec->hi)
+                             ? spec->lo : spec->hi;
+
+        auto altered = patch;
+        autosynth::Refine::setParameterValue (altered, path, moved);
+
+        if (VitalExport::toJson (altered, "test") == baseline)
+            silent.push_back (path);
+    }
+
+    if (! silent.empty())
+    {
+        juce::String names;
+        for (const auto& path : silent)
+            names += "\n    " + juce::String (path);
+        UNSCOPED_INFO ("searchable but absent from the preset:" << names);
+    }
+    CHECK (silent.empty());
 }

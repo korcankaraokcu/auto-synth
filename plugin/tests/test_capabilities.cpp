@@ -247,11 +247,13 @@ TEST_CASE ("reverb level acts as a return gain, not a dry/wet balance", "[capabi
     CHECK (wetHead > 0.8 * dryHead);
 }
 
-TEST_CASE ("the reverb send is in refinement scope for every enabled oscillator", "[capabilities]")
+TEST_CASE ("refinement searches only what the deliverable can carry", "[capabilities]")
 {
     auto patch = simplePatch (Waveform::saw);
     patch.oscs[1].enabled = true;
     patch.oscs[1].level = 0.5f;
+    patch.oscs[0].filterEnabled = true;
+    patch.oscs[0].filter.type = autosynth::FilterType::lowpass;
 
     const auto scope = Refine::scopeFor (patch);
     const auto has = [&scope] (const std::string& needle)
@@ -262,9 +264,27 @@ TEST_CASE ("the reverb send is in refinement scope for every enabled oscillator"
         return false;
     };
 
-    CHECK (has ("oscs.0.reverb_send"));
-    CHECK (has ("oscs.1.reverb_send"));
-    // Disabled oscillators contribute nothing, so searching them is wasted
-    // dimensionality.
-    CHECK_FALSE (has ("oscs.2.reverb_send"));
+    // Enabled oscillators are searched; disabled ones contribute nothing, so
+    // searching them is wasted dimensionality.
+    CHECK (has ("oscs.0.level"));
+    CHECK (has ("oscs.1.level"));
+    CHECK_FALSE (has ("oscs.2.level"));
+
+    // The per-oscillator reverb send and filter are deliberately absent, and
+    // this test used to assert the opposite.
+    //
+    // A Vital preset can send an oscillator to a filter, to the effects bus or
+    // straight out, but it has no per-oscillator send *level* and no filter per
+    // oscillator -- it has two filters and a routing choice. A value searched
+    // here could never reach the preset, so the objective is flat along it once
+    // the renderer is Vital and merely misleading before then.
+    //
+    // The filter has a second reason: analysis never enables it. `PartialFit`
+    // leaves `filterEnabled` false on every path, so the only patches that ever
+    // carried one came from the random sampler in the recovery harness and from
+    // a hand switch in the editor.
+    CHECK_FALSE (has ("oscs.0.reverb_send"));
+    CHECK_FALSE (has ("oscs.1.reverb_send"));
+    CHECK_FALSE (has ("oscs.0.filter.cutoff_hz"));
+    CHECK_FALSE (has ("oscs.0.filter.env.attack"));
 }
