@@ -26,7 +26,9 @@ const std::map<std::string, double> kFloors {
     // The trajectory terms are errors against a measurement rather than
     // distances, so their floors are the tolerance below which the diagnostic
     // would call them equal: 30 ms of attack, and a decibel of movement.
-    { "attack", 0.030 }, { "drift", 1.00 }, { "wobble", 0.50 }
+    { "attack", 0.030 }, { "drift", 1.00 }, { "wobble", 0.50 },
+    // A twelfth of full scale: below that, two onsets sound like each other.
+    { "onset", 0.08 }
 };
 
 // Loudness in dB against a *fixed* reference, not against the signal's own peak.
@@ -142,6 +144,7 @@ struct Contour
 {
     double attackSeconds = 0.0;
     double wobbleDb = 0.0;
+    double onset = 0.0;
 };
 
 Contour contourOf (const float* samples, int numSamples, double sampleRate, double gate)
@@ -157,6 +160,18 @@ Contour contourOf (const float* samples, int numSamples, double sampleRate, doub
         times[i] = static_cast<float> ((double) i / fps);
 
     out.attackSeconds = EnvelopeFit::attackSeconds (env, times);
+
+    // How much of the note is there a twentieth of a second in, against the
+    // loudest it ever gets. Attack *time* is the moment a threshold is crossed
+    // and says nothing about the shape of the rise, so an onset that fades in
+    // and one that arrives can measure the same -- which is how an envelope came
+    // to be described as too slow while its attack read fine.
+    {
+        const auto loudest = *std::max_element (env.begin(), env.end());
+        const auto at = static_cast<size_t> (0.05 * fps);
+        if (loudest > 1.0e-9f && at < env.size())
+            out.onset = env[at] / loudest;
+    }
 
     // Wobble as the rms deviation of the sustained middle in decibels, measured
     // over the same window the diagnostic uses -- past the attack and short of
@@ -196,6 +211,7 @@ struct TargetFeatures
     double attackSeconds = 0.0;
     double driftDb = 0.0;
     double wobbleDb = 0.0;
+    double onset = 0.0;
 
     TargetFeatures (const float* samples, int numSamples, double sampleRate,
                     double gate, double f0)
@@ -214,6 +230,7 @@ struct TargetFeatures
         const auto contour = contourOf (samples, numSamples, sampleRate, gate);
         attackSeconds = contour.attackSeconds;
         wobbleDb = contour.wobbleDb;
+        onset = contour.onset;
         driftDb = harmonicDriftDb (spectrograms.back(), f0);
     }
 };
@@ -271,6 +288,7 @@ Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
     const auto contour = contourOf (samples, numSamples, sampleRate, gate);
     loss.attack = std::abs (contour.attackSeconds - target.attackSeconds);
     loss.wobble = std::abs (contour.wobbleDb - target.wobbleDb);
+    loss.onset = std::abs (contour.onset - target.onset);
     loss.drift = std::abs (harmonicDriftDb (spectrogram, f0) - target.driftDb);
 
     return loss;
@@ -348,6 +366,13 @@ const std::map<std::string, Spec>& specTable()
             addAdsr (p + ".filter.env", 2.0);
         }
         addAdsr("amp_env", 2.0);
+        // Only the amplitude envelope's, and only now that there is a
+        // measurement of what it does: how much of the note is present fifty
+        // milliseconds in. `fitAttackCurve` picks it from the contour and
+        // picks too gently -- this engine reaches 0.20 of its peak there where
+        // the clarinet recording is at 0.45 -- and before the onset term below
+        // there was nothing for a search to improve.
+        t["amp_env.attack_curve"] = { "amp_env.attack_curve", 0.0, 8.0, false };
         addAdsr("filter.env", 2.0);
         t["filter.cutoff_hz"] = { "filter.cutoff_hz", 30.0, 18000.0, true };
         t["filter.resonance"] = { "filter.resonance", 0.5, 8.0, true };
@@ -415,6 +440,7 @@ double getParameter (const Patch& patch, const std::string& path)
         if (leaf == "sustain") return adsr->sustain;
         if (leaf == "release") return adsr->release;
         if (leaf == "curve")   return adsr->curve;
+        if (leaf == "attack_curve") return adsr->attackCurve;
     }
     if (path == "filter.cutoff_hz")  return patch.filter.cutoffHz;
     if (path == "filter.resonance")  return patch.filter.resonance;
@@ -470,6 +496,7 @@ void setParameter (Patch& patch, const std::string& path, double value)
         if (leaf == "sustain") { adsr->sustain = static_cast<float> (value); return; }
         if (leaf == "release") { adsr->release = static_cast<float> (value); return; }
         if (leaf == "curve")   { adsr->curve = static_cast<float> (value); return; }
+        if (leaf == "attack_curve") { adsr->attackCurve = static_cast<float> (value); return; }
     }
     if (path == "filter.cutoff_hz")  { patch.filter.cutoffHz = static_cast<float> (value); return; }
     if (path == "filter.resonance")  { patch.filter.resonance = static_cast<float> (value); return; }
@@ -575,7 +602,7 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
 
     }
 
-    for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
+    for (const char* leaf : { "attack", "decay", "sustain", "release", "curve", "attack_curve" })
         paths.push_back (std::string ("amp_env.") + leaf);
 
     paths.push_back ("filter.cutoff_hz");
@@ -832,12 +859,14 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     const auto wAttack = weightFor (start.attack, "attack");
     const auto wDrift = weightFor (start.drift, "drift");
     const auto wWobble = weightFor (start.wobble, "wobble");
+    const auto wOnset = weightFor (start.onset, "onset");
 
     const auto combine = [&] (const Loss& loss)
     {
         return (wSpectral * loss.spectral + wLoudness * loss.loudness
                 + wCentroid * loss.centroid + wAttack * loss.attack
-                + wDrift * loss.drift + wWobble * loss.wobble) / 6.0;
+                + wDrift * loss.drift + wWobble * loss.wobble
+                + wOnset * loss.onset) / 7.0;
     };
 
     CmaEs::Options cmaOptions;

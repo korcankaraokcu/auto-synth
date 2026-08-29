@@ -797,6 +797,43 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### Two axes the diagnostic did not have
+
+Every axis in `autosynth_diff` was shape-relative: each signal normalised by its
+own peak or its own profile before being compared. So all of them could read in
+tolerance while a preset lost two thirds of its level after the attack, which is
+exactly what happened -- a listener heard the peak stand out as a surge and the
+whole report said the patch was fine.
+
+**Sustain against peak**, in decibels, is one half of the hole. **Onset at fifty
+milliseconds**, as a fraction of the peak, is the other: attack *time* is the
+moment a threshold is crossed and says nothing about the shape of the rise, so
+an onset that fades in and one that arrives measure the same. That is how an
+envelope came to be described as too slow while its attack read `ok`.
+
+Both were reported by ear before either existed, which is the argument for
+adding them: the ear found two faults the eleven existing axes could not see.
+
+They immediately said something new. Against the recordings, both presets sat at
+**0.02** of their peak fifty milliseconds in, where the clarinet is at 0.45 and
+the violin at 0.25. Two causes, in series: this engine's own fit reaches only
+0.20 there, and Vital squares the envelope on top of that.
+
+The export half is the same correction as the sustain, applied to a shape rather
+than a number -- the curve written has to be the square root of the one fitted,
+and the square root of an exponential-approach shape is close to the same shape
+with a constant added to its rate. The fitting half is now in the objective, and
+`amp_env.attack_curve` becomes searchable to go with it: `fitAttackCurve` picks
+it from the contour and picks too gently, and before there was an onset term
+there was nothing for a search to improve.
+
+The violin's onset goes from 0.01 to 0.16 against a target of 0.25, which is in
+tolerance, and its sustain-to-peak comes into range. The clarinet's onset
+improves from 0.02 to 0.08 against 0.45 -- better and not fixed -- and its
+sustain-to-peak comes into range. Timbre drift gives way on both, which is the
+arithmetic of a weighted sum: a seventh term is a seventh of the weight, and
+drift is what it came out of.
+
 ### Vital's amplitude envelope is squared, and its power sign was backwards
 
 Reported as a sudden volume increase. Measured, it is the reverse: the note

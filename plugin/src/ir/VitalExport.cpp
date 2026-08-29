@@ -17,6 +17,9 @@ namespace
 // is exactly enough for those three plus one per oscillator.
 constexpr int kFirstOscEnvelope = 4;
 
+// Added to an attack power to undo Vital squaring the envelope. See addAdsr.
+constexpr float kSquaringCompensation = 2.5f;
+
 // Vital has four random LFOs, and its lfo_N_frequency control spans -7 to 9 --
 // sixteen octaves -- which is what a drift in octaves is expressed against.
 constexpr int kNumRandomLfos = 4;
@@ -137,8 +140,6 @@ juce::var wavetableFor (const Oscillator& osc, const juce::String& name)
     return juce::var (table);
 }
 
-constexpr float kAttackPowerBoost = 4.0f;
-
 void addAdsr (juce::DynamicObject& settings, const juce::String& prefix, const Adsr& env)
 {
     const auto t = VitalExport::Mapping::secondsToEnvelope;
@@ -151,14 +152,34 @@ void addAdsr (juce::DynamicObject& settings, const juce::String& prefix, const A
     // Vital's power controls bend each segment, and the sign was backwards.
     //
     // Assumed rather than measured, and wrong: sweeping the attack power
-    // through -5, -2.5, 0, +2, +4 and rendering each shows the segment getting
-    // *slower* as it goes negative and faster as it goes positive, which is the
-    // opposite of what this wrote. Negative is the direction that dwells at the
-    // start; ours is a positive "toward exponential" meaning a fast start, so
-    // the sign carries straight across.
-    settings.setProperty (prefix + "_attack_power", env.attackCurve);
-    settings.setProperty (prefix + "_decay_power", -env.curve);
-    settings.setProperty (prefix + "_release_power", -env.curve);
+    // through -5, -2.5, 0, +2 and +4 and rendering each shows the segment
+    // getting *slower* as it goes negative and faster as it goes positive,
+    // which is the opposite of what this wrote. Negative is the direction that
+    // dwells at the start; ours is a positive "toward exponential" meaning a
+    // fast start, so the sign carries straight across.
+    //
+    // Plus extra concavity, because the envelope Vital applies is squared.
+    //
+    // The sustain is handled by writing its square root; the attack needs the
+    // same idea applied to a shape rather than a number. Squaring a rise makes
+    // it slower early, so the curve written has to be the *square root* of the
+    // one fitted -- and the square root of this engine's exponential-approach
+    // shape is close to the same shape with a constant added to its rate.
+    //
+    // Measured rather than derived: with the correction absent, both presets
+    // sit at 0.02 of their peak fifty milliseconds in where the recordings are
+    // at 0.45 and 0.25.
+    // Clamped to the control's own range: an envelope curve of 20 plus the
+    // compensation is 22.5, which the range check caught before Vital did.
+    const auto power = [] (float value)
+    {
+        return juce::jlimit (-20.0f, 20.0f, value);
+    };
+
+    settings.setProperty (prefix + "_attack_power",
+                          power (env.attackCurve + kSquaringCompensation));
+    settings.setProperty (prefix + "_decay_power", power (-env.curve));
+    settings.setProperty (prefix + "_release_power", power (-env.curve));
 }
 
 // The eight drawn LFO shapes Vital expects to find, and the sampler's sample.

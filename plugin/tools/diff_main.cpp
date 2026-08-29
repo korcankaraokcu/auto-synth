@@ -115,6 +115,23 @@ struct Measurements
     double noisiness = 0.0;           // energy away from the harmonics
     double tailRt60 = 0.0;
     double peak = 0.0;
+
+    // How far the note falls from its peak to the level it holds, in decibels.
+    //
+    // Every other axis here is shape-relative -- each signal is normalised by
+    // its own peak or its own profile before being compared -- so all of them
+    // can read in tolerance while a preset loses two thirds of its level after
+    // the attack. That happened: Vital squares the amplitude envelope, so a
+    // sustain of 0.508 arrived as 0.258, and the whole diagnostic said the
+    // patch was fine while a listener heard the peak stand out as a surge.
+    double sustainToPeakDb = 0.0;
+
+    // How much of the note is present a twentieth of a second in, as a fraction
+    // of its peak. The other half of the same blindness: attack *time* is the
+    // moment a threshold is crossed and says nothing about the shape of the
+    // rise, so an onset that fades in and one that arrives can measure the
+    // same. A listener called an envelope too slow while the attack read `ok`.
+    double onsetAt50ms = 0.0;
     // How much the harmonic profile moves between the first and last thirds of
     // the note, in dB. A static oscillator scores near zero however wrong its
     // tone is, so this is a separate question from the profile itself.
@@ -309,6 +326,24 @@ Measurements measure (const std::vector<float>& x, double sampleRate, int hop, i
         }
         m.ampWobbleDb = std::sqrt (sumSquares / deviation.size());
         m.ampWobbleRateHz = wobbleRate (deviation, fps);
+
+        // The level the note holds, against the loudest it ever reaches. Taken
+        // as a median so one crest cannot stand for the sustain, over the same
+        // window the wobble is measured in.
+        std::vector<float> sustained (loudness.begin() + (std::ptrdiff_t) lo,
+                                      loudness.begin() + (std::ptrdiff_t) hi);
+        std::sort (sustained.begin(), sustained.end());
+        const auto held = sustained[sustained.size() / 2];
+        const auto loudestFrame = *std::max_element (loudness.begin(), loudness.end());
+        if (loudestFrame > 1.0e-9f && held > 1.0e-9f)
+            m.sustainToPeakDb = 20.0 * std::log10 (held / loudestFrame);
+    }
+
+    {
+        const auto loudestFrame = *std::max_element (loudness.begin(), loudness.end());
+        const auto at = static_cast<size_t> (0.05 * fps);
+        if (loudestFrame > 1.0e-9f && at < loudness.size())
+            m.onsetAt50ms = loudness[at] / loudestFrame;
     }
 
     const auto pitch = autosynth::Yin::track (x.data(), n, sampleRate, hop);
@@ -455,6 +490,15 @@ int main (int argc, char* argv[])
 
     line ("timbre drift", rounded (a.timbreDriftDb, 1) + " dB", rounded (b.timbreDriftDb, 1) + " dB",
           verdictFor (a.timbreDriftDb, b.timbreDriftDb, 1.0, "too static", "too restless", " dB"));
+
+    line ("sustain vs peak", juce::String (a.sustainToPeakDb, 1) + " dB",
+          juce::String (b.sustainToPeakDb, 1) + " dB",
+          verdictFor (a.sustainToPeakDb, b.sustainToPeakDb, 1.5, "drops further",
+                      "drops less", " dB"));
+
+    line ("onset at 50 ms", juce::String (a.onsetAt50ms, 2), juce::String (b.onsetAt50ms, 2),
+          verdictFor (a.onsetAt50ms, b.onsetAt50ms, 0.12, "arrives later",
+                      "arrives sooner", ""));
 
     line ("peak level", juce::String (a.peak, 3), juce::String (b.peak, 3),
           verdictFor (20.0 * std::log10 (std::max (a.peak, 1.0e-6)),
