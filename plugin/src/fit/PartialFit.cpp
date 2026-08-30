@@ -294,7 +294,8 @@ std::vector<HarmonicGroup> splitByRank (const HarmonicGroup& group,
 } // namespace
 
 Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamples,
-                                   double sampleRate, double gateSeconds, float noiseCeiling)
+                                   double sampleRate, double gateSeconds,
+                                   const Renderer& renderer, float noiseCeiling)
 {
     std::vector<int> active;
     for (int i = 0; i < kNumOsc; ++i)
@@ -308,8 +309,8 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
     const auto hasNoise = patch.noiseLevel > 1.0e-6f;
     const auto numColumns = static_cast<int> (active.size()) + (hasNoise ? 1 : 0);
 
-    Engine engine;
-    engine.prepare (sampleRate, 512);
+    if (! renderer)
+        return patch;
 
     const auto renderSolo = [&] (int oscIndex, bool noiseOnly)
     {
@@ -329,10 +330,8 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
             probe.oscs[static_cast<size_t> (oscIndex)].level = 1.0f;
         }
 
-        engine.setPatch (probe);
-        juce::AudioBuffer<float> buffer;
-        engine.renderOffline (buffer, probe.rootHz, duration, gateSeconds);
-        return spectralFeatures (buffer.getReadPointer (0), buffer.getNumSamples(), sampleRate);
+        const auto rendered = renderer (probe, duration, gateSeconds);
+        return spectralFeatures (rendered.data(), (int) rendered.size(), sampleRate);
     };
 
     std::vector<std::vector<double>> columns;
@@ -408,7 +407,8 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
 }
 
 Patch PartialFit::calibrateNoise (Patch patch, const float* target, int numSamples,
-                                  double sampleRate, double gateSeconds, float ceiling)
+                                  double sampleRate, double gateSeconds, float ceiling,
+                                  const Renderer& renderer)
 {
     if (ceiling <= 1.0e-6f || numSamples <= 0 || patch.rootHz <= 20.0f)
     {
@@ -434,16 +434,18 @@ Patch PartialFit::calibrateNoise (Patch patch, const float* target, int numSampl
         return patch;
     }
 
-    Engine engine;
-    engine.prepare (sampleRate, 512);
+    if (! renderer)
+    {
+        patch.noiseLevel = 0.0f;
+        return patch;
+    }
+
     const auto duration = numSamples / sampleRate;
 
     const auto renderedShare = [&] (const Patch& candidate)
     {
-        engine.setPatch (candidate);
-        juce::AudioBuffer<float> buffer;
-        engine.renderOffline (buffer, candidate.rootHz, duration, gateSeconds);
-        return Roles::noiseShare (buffer.getReadPointer (0), buffer.getNumSamples(),
+        const auto rendered = renderer (candidate, duration, gateSeconds);
+        return Roles::noiseShare (rendered.data(), (int) rendered.size(),
                                   sampleRate, candidate.rootHz);
     };
 
@@ -810,13 +812,6 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
             if (osc.envEnabled)
                 osc.env.release = juce::jmin (osc.env.release, release);
 
-        // Everything audible feeds the room. Per-oscillator sends are a
-        // creative control; nothing in a single recording says one layer was
-        // further back than another, so inventing a difference would be
-        // fabricating structure the evidence does not support.
-        for (auto& osc : patch.oscs)
-            if (osc.enabled)
-                osc.reverbSend = 1.0f;
     }
 
     double claimed = 0.0;
@@ -834,9 +829,10 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
                                           trackOptions.fftSize, options.hop);
     const auto ceiling = kMaxPitchedNoise
                        * static_cast<float> (juce::jlimit (0.0, 1.0, share / kFullNoiseShare));
-    auto calibrated = calibrateLevels (patch, samples, numSamples, sampleRate, gateTime, ceiling);
+    auto calibrated = calibrateLevels (patch, samples, numSamples, sampleRate, gateTime,
+                                       options.renderer, ceiling);
     return calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate, gateTime,
-                           static_cast<float> (ceiling));
+                           static_cast<float> (ceiling), options.renderer);
 }
 
 } // namespace autosynth

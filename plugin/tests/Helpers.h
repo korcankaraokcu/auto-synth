@@ -9,9 +9,10 @@
 // written here means the same thing as a bound written there.
 
 #include "analysis/Stft.h"
-#include "dsp/Voice.h"
 #include "ir/Patch.h"
+#include "vital/VitalHost.h"
 
+#include <catch2/catch_test_macros.hpp>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
@@ -25,6 +26,17 @@ namespace autotest
 constexpr double kSampleRate = 48000.0;
 constexpr double kDuration = 1.0;
 constexpr double kGate = 0.7;
+
+// How close two renders of the same patch come, and therefore the floor under
+// every "exactly the same" claim in the suite.
+//
+// It is zero -- `VitalHost` settles the plug-in before each render precisely so
+// that it is -- and the bound is kept a little above zero rather than at it
+// because a claim of bit-equality about someone else's synth is a claim this
+// project is not in a position to make. A thousandth is 60 dB under these
+// signals and two orders below the smallest difference any test here calls a
+// difference, so a control that did something clears it by a wide margin.
+constexpr float kRenderFloor = 1.0e-3f;
 
 // --- fixtures --------------------------------------------------------------
 
@@ -67,26 +79,47 @@ inline juce::var readJson (const juce::File& file)
 
 // --- rendering -------------------------------------------------------------
 
+// The synth under test is Vital.
+//
+// This project exports Vital presets and nothing else, so a bound on how a
+// patch sounds is a bound on how *Vital* sounds it. Asserting it against any
+// other synth would be proving something about a program nobody runs -- which
+// is the position the suite was in while it rendered through an engine of its
+// own, and the reason an exported preset could pass every test here and still
+// arrive wrong.
+//
+// One instance for the whole suite: instantiating a VST3 costs about a second,
+// and these tests render hundreds of times.
+//
+// Owned by the entry point rather than held in a static here, because a plug-in
+// has to be torn down while JUCE is still standing. A function-local static
+// outlives the scoped initialiser and takes the message manager with it on the
+// way out -- every test passes and the process then exits with an access
+// violation, which is a green suite and a red exit code.
+inline autosynth::VitalHost*& vitalHost()
+{
+    static autosynth::VitalHost* host = nullptr;
+    return host;
+}
+
+inline autosynth::VitalHost& vital() { return *vitalHost(); }
+
+inline bool vitalReady() { return vitalHost() != nullptr && vitalHost()->isOpen(); }
+
 inline std::vector<float> render (const autosynth::Patch& patch,
                                   double noteHz = 0.0,
                                   double duration = kDuration,
-                                  double gate = kGate,
-                                  const std::array<float, autosynth::kNumOsc>* monitor = nullptr)
+                                  double gate = kGate)
 {
-    autosynth::Engine engine;
-    engine.prepare (kSampleRate, 512);
-    engine.setPatch (patch);
-    if (monitor != nullptr)
-        engine.setMonitorMask (*monitor);
+    // Skipped rather than failed: with no plug-in there is no measurement, and
+    // a red suite would say the code is wrong when the machine is merely bare.
+    if (! vitalReady())
+        SKIP ("Vital is not installed; nothing to render through");
 
-    juce::AudioBuffer<float> buffer;
-    engine.renderOffline (buffer, noteHz > 0.0 ? noteHz : patch.rootHz, duration, gate);
+    auto out = vital().render (patch, noteHz > 0.0 ? noteHz : patch.rootHz, duration, gate);
 
-    const auto* data = buffer.getReadPointer (0);
-    std::vector<float> out (data, data + buffer.getNumSamples());
-
-    // Peak-limit, matching autosynth_render and audio.write_wav. Without this
-    // a patch that clips would be compared against a reference that did not.
+    // Peak-limit, matching autosynth_vital. Without this a patch that clips
+    // would be compared against a reference that did not.
     float peak = 0.0f;
     for (auto v : out)
         peak = juce::jmax (peak, std::abs (v));
@@ -95,6 +128,17 @@ inline std::vector<float> render (const autosynth::Patch& patch,
             v /= peak;
 
     return out;
+}
+
+// The same rendering, in the form the fitter and the harness take it: they hold
+// no synth of their own, so anything closed-loop -- level calibration,
+// refinement, recovery -- has to be handed one.
+inline autosynth::Renderer renderer()
+{
+    return [] (const autosynth::Patch& patch, double duration, double gate)
+    {
+        return render (patch, patch.rootHz, duration, gate);
+    };
 }
 
 // --- patch builders --------------------------------------------------------

@@ -381,6 +381,11 @@ TEST_CASE ("assembled patch matches the reference", "[golden][analysis]")
     for (const auto& c : loadCases())
     {
         INFO ("case: " << c.name);
+        // Deliberately without a renderer, so this compares the deterministic
+        // half of the fit and only that. Level calibration is closed-loop
+        // around Vital, and the reference these fixtures come from closed its
+        // loop around a different synth -- holding the two to the same numbers
+        // would be asking two synths to agree, not two implementations.
         autosynth::PartialFit::Options options;
         options.hop = kHop;
         const auto fitted = autosynth::PartialFit::fit (

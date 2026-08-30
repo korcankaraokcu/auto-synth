@@ -112,7 +112,6 @@ Patch Patch::fromJson (const juce::var& json)
             o.waveformB = parseEnum (getString (v, "waveform_b", getString (v, "waveform", "saw")),
                                      kWaveformNames, o.waveform);
             o.waveMorph = getFloat (v, "wave_morph", o.waveMorph);
-            o.reverbSend = getFloat (v, "reverb_send", o.reverbSend);
             o.numFrames = juce::jlimit (1, Oscillator::kMaxFrames,
                                         getInt (v, "num_frames", o.numFrames));
             o.framePosition = getFloat (v, "frame_position", o.framePosition);
@@ -140,16 +139,6 @@ Patch Patch::fromJson (const juce::var& json)
             }
             o.envEnabled = getBool (v, "env_enabled", o.envEnabled);
             o.env = parseAdsr (getChild (v, "env"), o.env);
-            o.filterEnabled = getBool (v, "filter_enabled", o.filterEnabled);
-            if (auto oscFilter = getChild (v, "filter"); oscFilter.isObject())
-            {
-                o.filter.type = parseEnum (getString (oscFilter, "type", "lowpass"),
-                                           kFilterNames, FilterType::lowpass);
-                o.filter.cutoffHz = getFloat (oscFilter, "cutoff_hz", o.filter.cutoffHz);
-                o.filter.resonance = getFloat (oscFilter, "resonance", o.filter.resonance);
-                o.filter.envAmount = getFloat (oscFilter, "env_amount", o.filter.envAmount);
-                o.filter.env = parseAdsr (getChild (oscFilter, "env"), o.filter.env);
-            }
             p.oscs[static_cast<size_t> (i)] = o;
         }
     }
@@ -244,7 +233,6 @@ juce::String Patch::toJson() const
         obj->setProperty ("unison_detune", o.unisonDetune);
         obj->setProperty ("waveform_b", kWaveformNames[static_cast<size_t> (o.waveformB)]);
         obj->setProperty ("wave_morph", o.waveMorph);
-        obj->setProperty ("reverb_send", o.reverbSend);
         obj->setProperty ("num_frames", o.numFrames);
         obj->setProperty ("frame_position", o.framePosition);
         obj->setProperty ("frame_position_env_amount", o.framePositionEnvAmount);
@@ -269,15 +257,6 @@ juce::String Patch::toJson() const
         obj->setProperty ("frames", juce::var (frameArray));
         obj->setProperty ("env_enabled", o.envEnabled);
         obj->setProperty ("env", adsrToVar (o.env));
-
-        auto* oscFilterObj = new juce::DynamicObject();
-        oscFilterObj->setProperty ("type", kFilterNames[static_cast<size_t> (o.filter.type)]);
-        oscFilterObj->setProperty ("cutoff_hz", o.filter.cutoffHz);
-        oscFilterObj->setProperty ("resonance", o.filter.resonance);
-        oscFilterObj->setProperty ("env_amount", o.filter.envAmount);
-        oscFilterObj->setProperty ("env", adsrToVar (o.filter.env));
-        obj->setProperty ("filter_enabled", o.filterEnabled);
-        obj->setProperty ("filter", juce::var (oscFilterObj));
         oscArray.add (juce::var (obj));
     }
 

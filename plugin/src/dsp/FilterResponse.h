@@ -9,14 +9,11 @@ namespace autosynth
 // Magnitude response of the 2-pole analog prototype, matching
 // engine/filters.analog_magnitude.
 //
-// Distinct from `Svf`, and deliberately so. Svf is what *plays* audio; this is
-// what *fitting* reasons about. The fitter needs to ask "what would a filter at
-// this cutoff do to this harmonic?" thousands of times without rendering
-// anything, and it needs to give the same answer as the Python fitter did.
-//
-// Keeping them separate is also honest about the seam: the fitting model and
-// the playback model are not the same filter, which is exactly what the engine
-// conformance test measures.
+// This is what *fitting* reasons about, and it is not what plays: the fitter
+// asks "what would a filter at this cutoff do to this harmonic?" thousands of
+// times without rendering anything, while the sound is made by Vital's own
+// filters. So it is a model of a filter rather than the filter, close enough to
+// choose a cutoff from and never used to produce a sample.
 inline float analogMagnitude (FilterType type, float frequencyHz, float cutoffHz, float q) noexcept
 {
     if (type == FilterType::off)

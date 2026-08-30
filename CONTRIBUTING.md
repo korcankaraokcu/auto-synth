@@ -14,6 +14,7 @@ has been measured, and what is left to do.
 | **OS** | Windows 10 or later. Linux and macOS are on the roadmap; nothing here is deliberately Windows-only, but neither is tested. |
 | **Compiler** | Visual Studio 2019 or later, "Desktop development with C++". The standalone Build Tools are enough. |
 | **CMake** | 3.22 or later. `pip install cmake` works if you would rather not install it system-wide. |
+| **Vital** | Installed as a VST3. It is the synth: the tools render through it, the fitter optimises against it, and the test suite skips every audible case without it. No Vital code is linked or shipped. |
 
 JUCE 8.0.15 and Catch2 v3.7.1 are fetched at configure time and pinned in
 `plugin/CMakeLists.txt`. Nothing is vendored, so a fresh clone is small and the
@@ -27,7 +28,6 @@ first configure is slow.
 
 ```powershell
 .\scripts\bootstrap.ps1            # configure, build, test
-.\scripts\bootstrap.ps1 -Install   # ...and install the VST3
 .\scripts\bootstrap.ps1 -Config Debug -SkipTests
 ```
 
@@ -38,7 +38,6 @@ build are not build errors — see [Known build traps](#known-build-traps).
 
 ```powershell
 cmake -S plugin -B plugin/build
-cmake --build plugin/build --config Release --target AutoSynth_VST3 AutoSynth_Standalone
 cmake --build plugin/build --config Release --target autosynth_tests
 ctest --test-dir plugin/build -C Release --output-on-failure
 ```
@@ -47,60 +46,55 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 
 | Target | What it is |
 |---|---|
-| `AutoSynth_VST3` / `AutoSynth_Standalone` | The plugin |
-| `autosynth_dsp` | Static library: engine, analysis and fitting. Everything else links it. |
+| `autosynth_dsp` | Static library: analysis, fitting and the exporter. Everything else links it. |
 | `autosynth_tests` | The test suite |
-| `autosynth_render` | Headless renderer — patch JSON in, WAV out |
 | `autosynth_probe` | Analysis probe — WAV in, every intermediate stage out as JSON |
 | `autosynth_diff` | A/B diagnosis — two WAVs in, the difference on named axes out |
-| `autosynth_eval` | Ground-truth recovery harness — how good is the fitter? |
 | `autosynth_vital` | Renders, fits and evaluates through the installed Vital VST3 |
-| `install_plugin` | Copies the VST3 to the per-user plug-in folder |
 
-`autosynth_vital` needs Vital installed and links none of its code; it hosts
-whatever is at `C:\Program Files\Common Files\VST3\Vital.vst3` unless
-`--plugin` says otherwise. That is deliberate — it renders the version the
-presets will actually be opened in. The export gap is then an ordinary diff:
+There is no synth here, and no plug-in. Both were removed once the deliverable
+became a preset rather than a sound: a synth of our own is a thing to keep in
+step with Vital, keeping two in step was itself producing bugs, and every bound
+the suite asserted was a bound on a program nobody runs.
+
+`autosynth_vital` is therefore the only thing that makes sound. It links none of
+Vital's code and hosts whatever VST3 the platform's standard locations hold,
+unless `--plugin` says otherwise — deliberately the version the presets will
+actually be opened in. `src/vital/VitalHost.h` is the whole of the hosting, and
+the test suite shares it so that both drive the plug-in the same way.
 
 ```
-autosynth_render patch.json ours.wav --note 440
-autosynth_vital  patch.json theirs.wav
-autosynth_diff   ours.wav   theirs.wav
+autosynth_vital fitted.json out.wav --fit samples/clarinet.wav --preset out.vital
+autosynth_diff  samples/clarinet.wav out.wav
 ```
 
-It has two further modes, both of which put Vital where this engine usually
-sits: `--fit target.wav` runs the fitter with Vital rendering every candidate,
-and `--eval` runs the recovery harness entirely inside Vital -- random patches
-rendered by Vital as the targets, and the control and every candidate rendered
-there too.
+`autosynth_probe --patch` writes a patch too, but an *analysis* one: it has no
+renderer, so the levels are whatever the factorisation left and the noise bed is
+zero. That is the right thing for a stage-by-stage comparison and the wrong
+thing to listen to.
+
+Two further modes do what used to need an engine of our own: `--fit target.wav`
+runs the fitter with Vital rendering every candidate, and `--eval` runs the
+ground-truth recovery harness inside Vital — random patches rendered by Vital as
+the targets, and the control and every candidate rendered there too.
 
 ```
 autosynth_vital fitted.json out.wav --fit samples/clarinet.wav --dur 4 --gate 3
 autosynth_vital --eval --trials 12 --seed 0
-autosynth_eval  --trials 12 --seed 0        # the same question, this engine
 ```
-
-The last two are *not* comparable by their absolute scores: the targets are
-different populations, because one set was rendered by Vital and the other by
-this engine. What compares is how far each run beats the control it ran with.
 
 ### Known build traps
 
-- **`COPY_PLUGIN_AFTER_BUILD` is off deliberately.** JUCE's auto-copy targets
-  `C:\Program Files\Common Files\VST3`, which needs elevation. The build
-  compiles and links successfully and then fails at the very last step with a
-  permission error, which reads like a build failure but is not one. Use
-  `install_plugin`, which writes to the per-user folder instead.
 - **Build the configuration you intend to test.** Building `RelWithDebInfo`
   while running a `Release` binary means a fixed bug keeps reproducing. This
   cost an afternoon once.
 - **Rebuild *every* tool you are about to measure with.** The same trap in a
   second costume: after changing the envelope fitter, `autosynth_probe` and
-  `autosynth_tests` were rebuilt but `autosynth_eval` was not, so a harness
-  "baseline" was recorded from a binary predating the change. An hour then went
-  into bisecting a regression that was really a comparison against the wrong
-  build. `.\scripts\bootstrap.ps1` builds all of them, which is the reason to
-  prefer it over hand-picked targets.
+  `autosynth_tests` were rebuilt but the harness was not, so a "baseline" was
+  recorded from a binary predating the change. An hour then went into bisecting
+  a regression that was really a comparison against the wrong build.
+  `.\scripts\bootstrap.ps1` builds all of them, which is the reason to prefer it
+  over hand-picked targets.
 - **Keep the checkout path short on Windows.** JUCE's repository contains very
   deep paths of its own (iOS demo assets nested a dozen levels down), and with
   `MAX_PATH` at 260 characters the *fetch* fails before anything is compiled --
@@ -124,14 +118,23 @@ sample → analysis → structure decisions → parameter mapping → refinement
 
 Three decisions shape everything else.
 
-**The IR is the deliverable, not the engine.** `src/ir/Patch.h` defines a
-synth-agnostic patch. Analysis produces one, the engine renders one, exporters
-translate one. "Should we support Vital?" is therefore not an architecture
-question — it is a later exporter.
+**The IR is the deliverable's draft, not a synth.** `src/ir/Patch.h` defines a
+synth-agnostic patch. Analysis produces one, `VitalExport` translates one, Vital
+plays one. Keeping it synth-agnostic is still worth the indirection: it is what
+lets analysis be written in terms of what was *measured* rather than in terms of
+a control layout, and a second exporter would be a translation rather than a
+second fitter.
 
-**We own the synthesizer.** Targeting someone else's plugin means you cannot
-render inside an optimisation loop cheaply, cannot model the forward pass, and
-face a parameter space far larger than analysis can constrain.
+It is not, however, allowed to describe things the deliverable cannot carry. A
+per-oscillator filter and a per-oscillator reverb send both lived here for a
+while and neither ever reached a preset: fields that can be set, fitted and
+tested, and never heard. If Vital cannot express it, it does not belong in the
+IR until Vital can.
+
+**Vital is the synth.** Targeting someone else's plug-in costs a slower
+optimisation loop and gives up any model of the forward pass. It buys the only
+thing that matters here, which is that the thing being measured is the thing
+being delivered.
 
 **Analysis first, optimiser second, ML last (or never).** DSP analysis gives an
 interpretable intermediate representation you can debug and show a user. A
@@ -163,42 +166,34 @@ nothing can bring it back. Analysis proposes; refinement can only prune.
 ```
 plugin/
   src/ir/          Patch.h/.cpp — the contract, plus JSON read and write
-  src/dsp/         Tables, Envelope, Svf, Delay, Reverb, Voice — the engine
+                   VitalExport — the patch as a .vital preset
+  src/dsp/         Tables, Envelope, Reverb, FilterResponse — shared definitions
+                   the fitter and the exporter must agree on, not a synth
   src/analysis/    Stft, Yin, Partials, Grouping, Roles
   src/fit/         WaveformFit, EnvelopeFit, FilterFit, Modulation, EffectsFit,
                    PartialFit, Nnls, Nmf, CmaEs, Refine
   src/eval/        Recovery — the ground-truth harness
-  src/Parameters*  host-automatable parameters
-  src/Plugin*      processor and editor
-  src/ParamKnob.h  shared rotary knob; yields the wheel to the scroll panel
-  src/ControlGroup.h  a titled box of related global controls
-  tools/           render_main.cpp, probe_main.cpp, eval_main.cpp
+  src/vital/       VitalHost.h — the installed plug-in, hosted
+  tools/           probe_main.cpp, diff_main.cpp, vital_main.cpp
   tests/           the suite, and golden/ — frozen reference data
 scripts/
   bootstrap.ps1
 ```
 
+Nothing under `src/` renders. Anything that needs sound takes a `Renderer` —
+`Patch.h` defines it, `VitalHost` supplies it, and the tools and the tests hand
+it in. That is what keeps `autosynth_dsp` free of a plug-in host, and it is also
+why level calibration, refinement and the recovery harness all do nothing rather
+than something approximate when there is no renderer to give them.
+
 ### Signal flow
 
-Oscillators (each with its own filter and envelope) → noise → amplitude
-envelope and amp LFO → global filter → delay → **+ reverb return** → master.
+Oscillators (each with its own envelope) → noise → amplitude envelope and amp
+LFO → filter → delay → **+ reverb return** → master.
 
-The reverb is one shared unit fed by **per-oscillator sends**, not three
-instances. Each oscillator controls how much reverb it gets; the size, damping
-and return are common to all three. A send gives the usual creative result —
-one layer drenched, another dry — while keeping the patch in a single acoustic
-space, which is how a real instrument behaves.
-
-`level` is a return gain rather than a dry/wet balance, and that is what makes
-the per-oscillator send meaningful: the dry path is already whatever the sends
-did not take.
-
-Note that the cost argument for this is weaker than it might appear, and is not
-the reason. The reverb lives on the `Engine`, not the `Voice`, so three of them
-would be three instances in total rather than three per voice — polyphony does
-not multiply it. Per-oscillator reverb *character* is therefore a reasonable
-thing to add later if a sound calls for it; it was left out as a scope and
-interface decision, not a performance one.
+`reverb.level` is a return gain rather than a dry/wet balance. Vital's control
+is a crossfade, so the export converts between the two — see
+[Exporting to Vital](#exporting-to-vital) for the measured ratio.
 
 ---
 
@@ -209,53 +204,69 @@ cmake --build plugin/build --config Release --target autosynth_tests
 ctest --test-dir plugin/build -C Release --output-on-failure
 
 # or the binary directly, for tags and filters
-.\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[engine]"
+.\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[fit]"
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-118 cases. Tags: `[ir]`, `[engine]`, `[analysis]`, `[fit]`, `[capabilities]`,
-`[recovery]`, `[unison]`, `[golden]`.
+115 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+`[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
 name — `autosynth_tests "[.slow]"`. There is one: the assertion that the fitter
 beats the control, which has to run real trials.
 
+**The suite renders through Vital.** It opens the plug-in once, in `main.cpp`,
+and every case that needs sound goes through it; without Vital installed those
+cases are skipped with a note rather than passing quietly. That is the point of
+the change: a bound written here is now a bound on the synth that will actually
+play the preset. It cost about half the cases in the file, because half of them
+were asserting things about an engine that no longer exists — and it caught four
+export defects the moment it was switched on, listed in
+[What rendering the tests through Vital found](#what-rendering-the-tests-through-vital-found).
+
 ### The golden fixtures
 
 This project was developed against a Python reference implementation. Every
-stage of the C++ engine and analysis chain was validated against it
-element-wise, and that reference was then removed once the port was complete.
+stage of the analysis chain was validated against it element-wise, and that
+reference was then removed once the port was complete.
 
-`plugin/tests/golden/` is what remains: the reference implementation is gone,
-but the evidence it produced is not.
+`plugin/tests/golden/analysis/` is what remains: an input signal and the full
+analysis report the reference produced, mirroring the schema `autosynth_probe`
+emits, so the two can be compared field by field. The reference implementation
+is gone, but the evidence it produced is not.
 
-- `golden/engine/` — a patch and the audio the reference rendered from it.
-- `golden/analysis/` — an input signal and the full analysis report the
-  reference produced, mirroring the schema `autosynth_probe` emits, so the two
-  can be compared field by field.
-
-Analysis inputs are stored as 16-bit and read back *before* analysis, so both
+Inputs are stored as 16-bit and read back *before* analysis, so both
 implementations saw exactly the same samples and quantisation is not a
 difference between them.
 
+The fixtures cover the deterministic half of the fit and only that. Level
+calibration is a closed loop around Vital, and the reference closed its loop
+around a different synth: holding the two to the same numbers would be asking
+two synths to agree, not two implementations. So the golden fit runs without a
+renderer, and what is compared is structure — how many sources, which waveform,
+which interval.
+
+There was also a `golden/engine/` — forty patch-and-render pairs pinning this
+project's own synth sample by sample. It went with the synth. Vital-rendered
+replacements were considered and rejected: they would depend on the version
+installed on one machine and fail on every other.
+
 ### Blessing fixtures
 
-Regenerating a golden fixture from the current engine is a deliberate act that
-belongs in a commit message, not a way to make a red test green.
+Regenerating a golden fixture is a deliberate act that belongs in a commit
+message, not a way to make a red test green.
 
 A conformance bound that gets loosened to accommodate a defect has stopped
-being a measurement. That is not hypothetical here: the all-filters bound was
-once widened from 3.33 dB to 6.0 dB to "account for per-oscillator filters",
-when in fact the C++ voice was silently dropping per-oscillator filtering
-entirely. Once the filters actually ran, the figure fell to 2.33 dB. The bound
-had been fitted to the bug.
-
-If a change alters engine output on purpose, say which fixtures moved and why.
+being a measurement. That is not hypothetical here: a conformance bound was once
+widened from 3.33 dB to 6.0 dB to "account for per-oscillator filters", when in
+fact the renderer was silently dropping per-oscillator filtering entirely. Once
+the filters actually ran, the figure fell to 2.33 dB. The bound had been fitted
+to the bug.
 
 ### Writing tests that can fail
 
-Three bugs once sat in `Voice::render` simultaneously — per-oscillator filters
-never applied, the solo/mute mask never applied, the reverb send never
+Three bugs once sat in one render function simultaneously — per-oscillator
+filters never applied, the solo/mute mask never applied, the reverb send never
 accumulated — and the entire suite passed. Each was a *no-op*, and every test
 compared audio against audio, so a control that did nothing still matched a
 reference captured after it stopped working.
@@ -265,40 +276,15 @@ The lesson is a rule for new features:
 > **A feature needs a test that fails when the feature does nothing.**
 
 In practice that means comparing a feature against its own absence, in the same
-patch:
+patch: `two LFO slots reach two destinations at once` renders the patch with one
+LFO and with two and requires them to differ, and every "is an exact no-op" case
+asserts equality when a control is off, which catches leakage the other way.
 
-- `per-oscillator filters shape oscillators independently` compares a filtered
-  oscillator against an open one *within one patch* — a global filter cannot
-  produce that signal.
-- `the monitor mask silences oscillators` asserts that muting everything yields
-  actual silence — with the mask unapplied this returned full level.
-- Every "is an exact no-op" case asserts sample equality when a control is off,
-  which catches leakage in the other direction.
-
-### Measured conformance
-
-Run `autosynth_tests "[.report]"` to reproduce the distribution.
-
-| | Loudness | Brightness |
-|---|---|---|
-| Filter-free cases (mean of 25) | **0.057 dB** | — |
-| Filtered cases (mean of 15) | **2.89 dB** | 0.44 oct |
-
-The filter-free figure is the one to watch. With no filter running, the two
-implementations shared oscillators, envelopes, LFOs, delay and reverb outright
-and had no licence to differ at all, so anything above the noise there is a
-genuine defect. The filtered figure has to absorb up to four substitutions of
-an STFT magnitude response for a state-variable filter per patch.
-
-Two per-case outliers are known and documented in `test_golden_engine.cpp`:
-
-- **`filter_bandpass`, 10.43 dB.** A bandpass has steep skirts on both sides,
-  so a magnitude-response approximation diverges most there. It is the worst
-  case of the seam.
-- **`wave_pulse`, 0.79 dB** against under 0.02 for every other waveform. Small
-  in absolute terms but forty times its neighbours, and it points at
-  pulse-width table construction rather than at the filter seam. **Unexplained
-  — worth investigating.**
+There is a second lesson in those three bugs, and it took longer to learn. Two
+of the three controls were things a Vital preset has no way to carry, so a test
+proving they worked was proving something about a program with no users. They
+are gone from the IR now, and the surviving tests compare against the synth that
+will play the preset.
 
 ### A known limit of cross-implementation comparison
 
@@ -322,9 +308,7 @@ These drove design decisions and are cheaper to read than to rediscover.
 ### Measuring the fitter
 
 ```
-autosynth_eval --trials 24 --seed 0            # with refinement
-autosynth_eval --trials 24 --seed 0 --no-refine
-autosynth_eval --trials 24 --json
+autosynth_vital --eval --trials 24 --seed 0
 ```
 
 24 trials, seed 0, current IR. Both columns face the *same* targets, so this is
@@ -406,10 +390,10 @@ The shipped pipeline is `PartialFit` plus refinement.
 
 ### What the recovery harness cannot see
 
-It generates targets by rendering **this engine**, so it only ever tests sounds
-this engine can already make. It measures how well we solve the *inverse*
-problem and is structurally blind to the *modelling gap* — everything a real
-recording contains that the parameterisation cannot express.
+It generates its targets by rendering random patches, so it only ever tests
+sounds the parameterisation can already make. It measures how well we solve the
+*inverse* problem and is structurally blind to the *modelling gap* — everything
+a real recording contains that no patch could express.
 
 This is not hypothetical. The envelope was originally linear-only. Every
 harness trial scored well, because targets and fits were both linear and agreed
@@ -1087,10 +1071,10 @@ the preset will be played by and every difference between the two engines stops
 needing to be found and hand-corrected in the exporter.
 
 `Refine::Options::renderer` is how: a callback that turns a candidate patch into
-mono samples, empty by default and meaning "the engine in this repository".
-Nothing in `autosynth_dsp` learns about plug-in hosting; the tool that owns a
-synth owns the renderer, and `autosynth_vital --fit target.wav` supplies one
-backed by Vital.
+mono samples. Nothing in `autosynth_dsp` learns about plug-in hosting; whoever
+owns the synth owns the renderer, and `autosynth_vital` supplies one backed by
+Vital. It has no default -- with no renderer, refinement returns the patch it
+was given rather than optimising against a synth nobody will play.
 
 **It costs about 90 s per fit** against 33 s through this engine, at 192
 evaluations. Per evaluation that is 300 ms, split roughly 150 ms of preset load
@@ -1194,11 +1178,12 @@ sounds, because what the export owes the fitter is that the parameter has an
 The remaining twenty-seven were per-oscillator filters and reverb sends, and the
 plan for them was to trim the IR: two shared filters plus a routing choice,
 matching Vital exactly. Sizing the change first is what stopped it. Sixteen
-files, the golden engine fixtures, the editor -- and then the reason not to
+files, forty golden fixture pairs, the editor -- and then the reason not to
 bother at all: **`PartialFit` never enables a per-oscillator filter.** It leaves
 `filterEnabled` false on every path. The only patches that ever had one came
 from the recovery harness's own random sampler and from a hand switch in the
-editor.
+editor. Both fields were removed from the IR with the engine; see
+[What rendering the tests through Vital found](#what-rendering-the-tests-through-vital-found).
 
 So the export was not dropping something real. The harness was *generating*
 something unreachable, scoring the fitter on its failure to recover a feature no
@@ -2225,24 +2210,16 @@ case. The oscillator's `waveform`, `waveform_b`, `wave_morph` and `pulse_width`
 are that frame's *generator*.
 
 A frame stays generated until it is edited, and that is not a detail. A
-generated frame is built from its waveform's full Fourier series and
-band-limited per octave, so a saw at 220 Hz keeps all seventy-five harmonics
-that fit under Nyquist. Storing every shape as sixteen numbers instead — the
-obvious way to make "always a wavetable" true — cuts it at the sixteenth, which
-measures 1.7 octaves of brightness lost and would make every classic preset
-sound muffled for nothing. Drawn frames get private band-limited mipmaps;
-generated ones get none, because they already have one, so the memory and the
-FFTs scale with how much of the table has actually been drawn on rather than
-with `kMaxFrames`.
+generated frame stands for its waveform's *full* Fourier series, so a saw at
+220 Hz keeps all seventy-five harmonics that fit under Nyquist. Storing every
+shape as sixteen numbers instead — the obvious way to make "always a wavetable"
+true — cuts it at the sixteenth, which measures 1.7 octaves of brightness lost
+and would make every classic preset sound muffled for nothing.
 
-Those FFTs are also why editing is not simply "mutate the patch and hand it
-over". A rebuild with three drawn frames measured 5 ms, and the audio callback
-try-locks the patch and outputs silence when it loses — so dragging a bar
-dropped several blocks a second. Two things fixed it. Every octave low enough to
-fit all sixteen harmonics produces the *same* table, so eleven builds became
-five and the cost fell to 1.5 ms. And `Engine::buildFrameTables` now runs
-*outside* the lock, with `adoptFrameTables` handing the result over as a vector
-move, so what the audio thread is kept out of is a pointer swap.
+The exporter got that wrong for a while, writing sixteen harmonics for generated
+frames as well as drawn ones, and nothing could see it until the tests rendered
+through Vital. See
+[What rendering the tests through Vital found](#what-rendering-the-tests-through-vital-found).
 
 The remaining risk is that a drawn table is the least legible thing a patch can
 contain. "Saw, morphed 40% toward a narrow pulse" is a sentence; forty-eight
@@ -2314,32 +2291,104 @@ is what makes that safe in the other direction: `setPatch` can be called from a
 parameter callback, so the rebuild is skipped unless the frame data genuinely
 differs, which happens only on patch load and analysis.
 
-**Both engines have to agree on what a frame is.** Frames are built in sine
-phase, like every fixed shape except the pulse, so a crossfade of two tables is
-exactly a crossfade of their harmonic amplitudes — the fitter's model of the
-oscillator is the oscillator, not an approximation of it. There is one
-definition of what "saw" means as sixteen numbers —
-`WaveTables::blendedHarmonics` — and the oscillator, the fitter and the editor
-all call it. `test_wavetable.cpp` pins both ends of that: where Nyquist rather
-than the frame length limits them, a drawn frame and the fixed shape are the
-same signal, and where it does not, an undrawn saw is more than twice as bright
-as the same saw written out as sixteen harmonics.
-
-**Editing.** The wavetable row of each oscillator strip draws the selected
-frame's harmonics as sixteen bars and lets you drag them; the other active
-frames stay visible as faint ticks, because the point of a multi-frame table is
-the movement between frames and editing one blind to the others hides exactly
-that. The first drag on a generated frame seeds it from the shape it was
-generated from, so you move one bar rather than replacing the sound with a
-single sine. Which frame is being edited is *not* a parameter: it is a view,
-like solo and mute, and a saved patch must not remember which frame someone
-happened to have open.
+**The fitter and the exporter have to agree on what a frame is.** Frames are
+built in sine phase, like every fixed shape except the pulse, so a crossfade of
+two tables is exactly a crossfade of their harmonic amplitudes — the fitter's
+model of the oscillator is the oscillator, not an approximation of it. There is
+one definition of what "saw" means as sixteen numbers —
+`WaveTables::blendedHarmonics` — and both call it. `test_wavetable.cpp` pins
+both ends of that: where Nyquist rather than the frame length limits them, a
+drawn frame and the fixed shape are the same signal, and where it does not, an
+undrawn saw is more than twice as bright as the same saw written out as sixteen
+harmonics.
 
 **One scale factor for the whole set.** Each table is *not* normalised on its
 own. Peak-normalising per frame would flatten the differences between frames,
 and it would do it by crest factor rather than by loudness — a frame with more
 harmonics has a taller peak at the same energy, so it would come out quieter and
 moving the position would sound like a volume change instead of a timbre change.
+
+### What rendering the tests through Vital found
+
+The suite used to render through this project's own synth. Pointing it at Vital
+instead was meant to be a mechanical change — same tests, different renderer —
+and it turned twenty-one cases red in one go. Every one of them was either a
+claim about a program with no users or an export defect nobody could hear yet.
+
+**The master was twelve decibels hot, and Vital was limiting it.** Vital's
+oscillators arrive at the volume control at twice their stated amplitude: one
+oscillator at full level renders a peak of 1.998 with the control at 0 dB, and
+so does a pair at half level each, so the doubling is on the sum. On top of
+that, a 6 dB "makeup" had been added on the theory that a peak-normalised patch
+belongs at Vital's own default rather than under it. Together that put every
+loud preset 12 dB over, and Vital limits its own output at about 2.1: the same
+patch at master 0.5 and 0.8 renders peaks of 1.998 and 2.100 — four decibels
+asked for, a twentieth of a decibel delivered — and the difference comes back as
+odd harmonics on what was a sine. A "sine yields a single partial" test read
+fourteen partials, which is how it was found. The trim is now −6 dB and a
+clarinet exports at the recording's own peak.
+
+**Every wavetable was sixteen harmonics wide, generated ones included.** A drawn
+frame is sixteen numbers because that is what was measured into it. A saw is
+not: at 220 Hz it is seventy-five harmonics, and the export was throwing away
+everything above the sixteenth — the whole band over 3.5 kHz. The test that
+caught it renders a default saw against the same saw written out as sixteen
+numbers and requires the first to be more than twice as bright; the two came
+back identical to the last decimal. Generated frames now carry every harmonic a
+2048-point frame can hold.
+
+**Unison detune was four times too wide.** Vital's control is a percentage and
+the exporter was reading it as cents. Measured through the plug-in, two voices
+written at 8% render 30.5 cents apart and at 12% render 48.1, so it spans four
+cents per percent. At the values the fitter picks, that is the difference
+between a beat and a chord — and it is why the beat-rate estimator, which is
+correct, was reporting nonsense for anything above about ten cents.
+
+**Two renders of the same patch were not the same audio.** Four separate causes,
+each enough on its own. A note still held when the buffer ends — every render
+whose gate is its whole duration — survives `reset()` and the next preset load
+and goes on playing underneath what comes next, so a suite that rendered 55 Hz
+and then 220 measured 55 both times. Tails outlive the note that fed them. Vital
+*ramps* to a newly loaded preset's values rather than jumping: with no settle,
+two renders of one dry patch differed by 0.051 at the sample, six per cent of
+full scale, with the first render the odd one out — settling 85 ms leaves
+0.0036, 171 ms leaves 0.00024, 256 ms leaves nothing. And something a plug-in
+does lazily on its opening blocks survives even that, worth about a thousandth
+on the first render of a process.
+
+So `VitalHost::settle` stops the voices, runs on until the output is quiet, and
+never for less than a quarter of a second, and the first render of a process is
+discarded and taken again. Together they cost about half as much again on a fit
+— 68 s against 44 — and buy an objective that returns the same number for the
+same patch, which is what the whole loop assumes and what nothing had checked
+under a suite's worth of load.
+
+**And two IR fields turned out to be unreachable.** The per-oscillator filter
+and the per-oscillator reverb send were both fields that could be set, fitted,
+serialised and tested, and never heard: the exporter writes one filter and Vital
+has no per-oscillator send level. They are gone, along with the five capability
+tests that proved they worked.
+
+There was a fifth defect, and this file's own change caused it. Threading a
+renderer through analysis made level and noise calibration conditional on being
+given one, and `autosynth_vital --fit` was given one for refinement and not for
+the fit — so both calibrations silently did nothing. What comes back looks like
+a fit the whole way: oscillators, envelope, filter, all populated, with the
+oscillator levels the factorisation happened to leave and the noise bed at zero.
+It was caught by ear, on a clarinet four decibels quiet, and the numbers agreed
+once someone looked — the violin's noisiness read 0.040 against a target of
+0.287, and its timbre drift and sustain-to-peak were both out. Wired up, the
+clarinet's body comes back 4.4 dB louder with its drift and sustain in
+tolerance, and the violin's noisiness goes to 0.228.
+
+That is the shape of the whole section, one more time. A closed loop that
+quietly becomes no loop reports success, so `a fit without a renderer is
+visibly unfinished` now pins the two states apart, and `autosynth_vital` builds
+one renderer and hands that same object to everything rather than one per call
+site.
+
+The pattern is the same one this file keeps recording. A measurement taken
+against the wrong thing does not read as wrong — it reads as fine.
 
 ### Traps found along the way
 
@@ -2374,15 +2423,15 @@ moving the position would sound like a volume change instead of a timbre change.
 
 ## 5. Roadmap
 
-In priority order, which is the project owner's call and not a technical
-ranking: rank-within-a-group, then LFO wander, then the attack curve, then
-formants, then a Vital exporter. Linux and macOS are explicitly *not* wanted for
-now — Windows is enough — and stereo comes after the exporter.
+The exporter and the pivot to Vital are done; what is left is the fit itself.
+Priority is the project owner's call and not a technical ranking. Linux and
+macOS are explicitly *not* wanted for now — Windows is enough — and stereo is
+its own phase.
 
 ### Restore what the Python removal cost
 
-- ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth_eval`, see
-  [Measuring the fitter](#measuring-the-fitter).
+- ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth_vital
+  --eval`, see [Measuring the fitter](#measuring-the-fitter).
 - ~~Port NMF rank selection.~~ **Done** — `src/fit/Nmf.cpp`, and unlike the
   Python original it *is* on the shipped path: run per harmonic group rather
   than globally, which is the placement that makes it answerable.
@@ -2391,8 +2440,8 @@ now — Windows is enough — and stereo comes after the exporter.
 
 At ~33% exact, this is the ceiling on everything else.
 
-- ~~Split the accuracy figure by direction.~~ **Done** — `autosynth_eval`
-  prints a truth-against-fitted confusion matrix and lists every miscount with
+- ~~Split the accuracy figure by direction.~~ **Done** — the harness prints a
+  truth-against-fitted confusion matrix and lists every miscount with
   its intervals and levels. See
   [Counting: two bugs the confusion matrix found](#counting-two-bugs-the-confusion-matrix-found).
 - ~~Unison by beating.~~ **Done** — `Grouping::detectUnisonBeating`. See
@@ -2459,18 +2508,16 @@ At ~33% exact, this is the ceiling on everything else.
 
 ### Retiring this engine
 
-The direction is settled: the deliverable is a Vital preset, so this engine is a
-means rather than an end, and the pivot finishes when Vital renders everything.
-What it still does, and what has to be true before it stops:
+**Done.** This project had a synth of its own, and the pivot finished when Vital
+replaced it everywhere: refinement, level calibration, the recovery harness and
+the test suite all render through the installed plug-in now, and `src/dsp/`
+keeps only the definitions the fitter and the exporter must agree on -- the
+harmonic series, the envelope shape, the reverb's RT60 relation.
 
-**It renders every refinement candidate**, and it should stop. A Vital-backed
-renderer exists (`Refine::Options::renderer`, supplied by `autosynth_vital
---fit`) and is not yet the default.
+The comparison that settled it, re-run once the export was clean. Fitted through
+Vital and played by Vital, against fitted here and played by Vital:
 
-Re-run once the export was clean, the comparison is no longer ambiguous. Fitted
-through Vital and played by Vital, against fitted here and played by Vital:
-
-| clarinet | through this engine | through Vital |
+| clarinet | through the old engine | through Vital |
 |---|---|---|
 | brightness | 0.20 oct dull | ok |
 | amplitude wobble | 1.77 dB out | ok |
@@ -2478,7 +2525,7 @@ through Vital and played by Vital, against fitted here and played by Vital:
 | peak level | 6.63 dB loud | ok |
 | sustain vs peak | ok | 3.72 dB out |
 
-| violin | through this engine | through Vital |
+| violin | through the old engine | through Vital |
 |---|---|---|
 | noisiness | 0.04 out | ok |
 | attack | 0.17 s out | ok |
@@ -2488,44 +2535,36 @@ through Vital and played by Vital, against fitted here and played by Vital:
 Five axes out of tolerance become four on both, which undersells it: what comes
 right is brightness, wobble, drift, noisiness and attack, and the clarinet's
 level stops being six decibels hot because the optimiser can finally see what it
-is actually producing. What goes wrong is the sustain-to-peak and the onset --
-the two newest terms, and the two carrying the least weight in a seven-term sum.
-Both notes also release about a tenth of a second late.
+is actually producing.
 
-The first attempt at this comparison came out mixed and was then found to be
+The first attempt at that comparison came out mixed and was then found to be
 confounded by parameters the export could not carry. It is worth recording that
 the earlier result was not evidence against the idea; it was evidence that the
 measurement was broken, and there is no way to tell those apart except by fixing
 the measurement and asking again.
 
-Making it the default is a decision rather than a patch, because it makes Vital
-a *requirement* for fitting anything at all -- `Refine` cannot host a plug-in,
-so the tools would have to, and a machine without Vital could no longer fit. For
-a project whose output is a Vital preset that is arguably the honest dependency,
-but it is not a change to make quietly.
+What it cost, so the trade is on record:
 
-**It renders the recovery harness**, likewise, and `--eval` likewise exists.
+- **Vital is now required.** Fitting anything at all needs the plug-in
+  installed. For a project whose only output is a Vital preset that is the
+  honest dependency.
+- **A fit takes about seventy seconds** where it took thirty-three. Worth
+  knowing whether parallel plug-in instances help before assuming that is the
+  floor.
+- **Forty golden patch-and-render pairs went with it.** They pinned the old
+  synth sample by sample; Vital-rendered replacements would depend on the
+  version installed on one machine. The analysis fixtures remain and they cover
+  the deterministic half of the fit.
+- **Half of every A/B in this file is gone.** Three of one day's bugs -- the
+  reverb proportion, the level clipping, the squared envelope -- were found by
+  rendering one patch through both engines and diffing. Everything must now be
+  caught against the recording alone, which is why the sustain-to-peak and onset
+  axes were added first.
 
-**It costs about ninety seconds a fit against thirty-three**, which is fine for
-converting a sample and turns twelve harness trials from two minutes into
-thirty-five. Worth knowing whether parallel plug-in instances help before
-committing to it.
-
-**It anchors forty golden patch-and-render fixture pairs, and this is the part
-without a clean answer.** They pin this engine's behaviour sample by sample.
-Without the engine they are dead, and Vital-rendered replacements are not
-reproducible: they would depend on the version installed on one machine, so they
-would fail on any other. The conformance suite loses its anchor. Either it goes,
-or fixtures are generated from a pinned build of the fork -- which is the
-submodule that hosting the installed plug-in was chosen to avoid.
-
-**And it is half of every A/B in this file.** Three of one day's bugs -- the
-reverb proportion, the level clipping against it, the squared envelope -- were
-found by rendering one patch through both engines and diffing. After the
-removal, everything must be caught against the recording alone. That is why the
-sustain-to-peak and onset axes were added first: they close the specific hole
-that comparison had been covering, and the ear had already found both faults
-through it.
+Against which: switching the tests to Vital immediately found four export
+defects that had been shipping, including a preset twelve decibels over Vital's
+own limiter. See
+[What rendering the tests through Vital found](#what-rendering-the-tests-through-vital-found).
 
 ### Platform and reach
 
@@ -2536,17 +2575,15 @@ waits until after the exporter.
   cross-platform, the DSP is standard C++17, and CMake already selects the
   right per-user VST3 folder for Linux and macOS. What is missing is a tested
   build — a `bootstrap.sh` alongside the PowerShell script, a CI job, and
-  confirmation that the golden fixtures compare identically under GCC and Clang.
-  That last point is the only real unknown: the bounds in
-  `test_golden_engine.cpp` were measured with MSVC, and floating-point
+  confirmation that the golden analysis fixtures compare identically under GCC
+  and Clang. Their bounds were measured with MSVC, and floating-point
   differences across compilers may need the tolerances revisited on evidence
   rather than by loosening them.
 - **macOS support.** Same shape as Linux, plus AU packaging and code signing.
-- ~~Exporters.~~ **Working, and checked against Vital's own declarations** — `VitalExport`, plus
-  `autosynth_probe --vital out.vital` and an *Export Vital* button in the
-  editor. See [Exporting to Vital](#exporting-to-vital). It needs one load in
-  real Vital to confirm the numeric skews; the structure and the wavetable are
-  covered by tests here.
+- ~~Exporters.~~ **Working, and now the only output** — `VitalExport`, written
+  by `autosynth_probe --vital out.vital` and `autosynth_vital --preset`, checked
+  against Vital's own parameter declarations and against the plug-in itself. See
+  [Exporting to Vital](#exporting-to-vital).
 - **Stereo.** Rendering is easy. *Fitting* is a separate project: the analysis
   chain is mono by construction, and the IR has no pan or unison stereo spread,
   so there is nothing to widen yet. Treat it as its own phase.
@@ -2575,10 +2612,6 @@ waits until after the exporter.
   to 7 is a filter-against-table interaction, not a missing resonance — its
   frames *are* drawn, and they were fitted to the deconvolved profile while the
   error is measured after the filter.
-- ~~Editing a fitted table.~~ **Done** — sixteen draggable harmonic bars per
-  frame. Still missing: a way to seed a frame from a shape other than the
-  oscillator's own, an undo, and a Vital wavetable exporter to take the frames
-  somewhere else.
 
 ### Timbre and tone, continued
 

@@ -626,7 +626,7 @@ std::vector<Lfo> Modulation::bestSeveral (const Trajectories& trajectories, int 
             // spare -- and with two of them it almost never was, which left the
             // feature measured, built and hardly ever used. Vital's random LFOs
             // sit outside its eight ordinary ones and cost nothing, so the
-            // constraint was this engine's shape rather than the target's.
+            // constraint was the patch model's shape rather than the target's.
             for (auto& lfo : out)
             {
                 if (lfo.dest != strongest.dest)

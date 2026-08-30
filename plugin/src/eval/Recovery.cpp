@@ -1,7 +1,6 @@
 #include "eval/Recovery.h"
 
 #include "analysis/Stft.h"
-#include "dsp/Voice.h"
 #include "fit/PartialFit.h"
 #include "fit/Refine.h"
 
@@ -19,28 +18,10 @@ constexpr int kHop = 256;
 // control alike, so that swapping the synth swaps all of them together. Scoring
 // a Vital-rendered target against an engine-rendered control would measure the
 // difference between the two synths and call it a fitting error.
-std::vector<float> renderPatch (const Patch& patch, double sampleRate,
-                                double duration, double gate,
-                                const Recovery::Renderer& renderer = {})
+std::vector<float> renderPatch (const Patch& patch, double duration, double gate,
+                                const Recovery::Renderer& renderer)
 {
-    std::vector<float> out;
-
-    if (renderer)
-    {
-        out = renderer (patch, duration, gate);
-    }
-    else
-    {
-        Engine engine;
-        engine.prepare (sampleRate, 512);
-        engine.setPatch (patch);
-
-        juce::AudioBuffer<float> buffer;
-        engine.renderOffline (buffer, patch.rootHz, duration, gate);
-
-        const auto* data = buffer.getReadPointer (0);
-        out.assign (data, data + buffer.getNumSamples());
-    }
+    auto out = renderer (patch, duration, gate);
 
     float peak = 0.0f;
     for (auto v : out)
@@ -207,31 +188,8 @@ bool affectsAudio (const Patch& patch, const std::string& path)
         if (endsWith (".wave_morph"))
             return osc.waveformB != osc.waveform;
 
-        if (path.find (".env.") != std::string::npos && path.find (".filter.") == std::string::npos)
+        if (path.find (".env.") != std::string::npos)
             return osc.envEnabled;
-
-        if (path.find (".filter.") != std::string::npos)
-        {
-            // Never generated any more, so this is dead in practice; kept
-            // correct in case a hand-made patch is ever scored.
-            if (! osc.filterEnabled || osc.filter.type == FilterType::off)
-                return false;
-            // The filter envelope only matters if it is routed anywhere.
-            if (path.find (".filter.env.") != std::string::npos)
-                return std::abs (osc.filter.envAmount) > 0.01f;
-            return true;
-        }
-
-        // Not the reverb send, and not the oscillator's own filter above.
-        //
-        // Both affect this engine's audio, so identifiability is not the reason
-        // -- the reason is that refinement is no longer allowed to search
-        // either, because a Vital preset cannot carry them. Scoring a parameter
-        // nothing is permitted to move reports the distance between two random
-        // draws and puts it in the worst-recovered list, where it reads as a
-        // fitter failure and crowds out the real ones.
-        if (endsWith (".reverb_send"))
-            return false;
 
         return true; // cents, level
     }
@@ -259,13 +217,7 @@ bool affectsAudio (const Patch& patch, const std::string& path)
 
     if (startsWith ("reverb."))
     {
-        if (! patch.reverb.enabled || patch.reverb.level <= 1.0e-3f)
-            return false;
-        // A reverb nothing is sent to is inaudible however it is set.
-        for (const auto& osc : patch.oscs)
-            if (osc.enabled && osc.level > 1.0e-4f && osc.reverbSend > 1.0e-3f)
-                return true;
-        return false;
+        return patch.reverb.enabled && patch.reverb.level > 1.0e-3f;
     }
 
     return true; // amp_env.*, master_level
@@ -460,6 +412,11 @@ Recovery::Summary Recovery::run (const Options& options)
     std::map<std::string, int> errorCounts;
     const auto specs = Refine::continuousSpecs();
 
+    // Every score here is a comparison between two renders, so with no synth
+    // there is nothing to compare and no harness to run.
+    if (! options.renderer)
+        return summary;
+
     int attempts = 0;
     const auto maxAttempts = options.trials * 20;
 
@@ -469,13 +426,14 @@ Recovery::Summary Recovery::run (const Options& options)
 
         Trial trial;
         trial.truth = randomPatch (rng);
-        const auto target = renderPatch (trial.truth, options.sampleRate,
-                                         options.duration, options.gate, options.renderer);
+        const auto target = renderPatch (trial.truth, options.duration, options.gate,
+                                         options.renderer);
         if (peakOf (target) < options.minPeak)
             continue; // inaudible target; resample rather than score noise
 
         PartialFit::Options fitOptions;
         fitOptions.hop = kHop;
+        fitOptions.renderer = options.renderer;
         trial.fitted = PartialFit::fit (target.data(), (int) target.size(),
                                         options.sampleRate, fitOptions);
 
@@ -491,8 +449,7 @@ Recovery::Summary Recovery::run (const Options& options)
 
         // The fitted patch is rendered at the pitch it decided on, exactly as
         // the plugin would play it.
-        const auto fittedAudio = renderPatch (trial.fitted, options.sampleRate,
-                                              options.duration, options.gate,
+        const auto fittedAudio = renderPatch (trial.fitted, options.duration, options.gate,
                                               options.renderer);
         trial.fit = score (fittedAudio, target, options.sampleRate);
 
@@ -500,8 +457,7 @@ Recovery::Summary Recovery::run (const Options& options)
         // reference that makes the fitted numbers mean something.
         Patch control;
         control.rootHz = trial.truth.rootHz;
-        const auto controlAudio = renderPatch (control, options.sampleRate,
-                                               options.duration, options.gate,
+        const auto controlAudio = renderPatch (control, options.duration, options.gate,
                                                options.renderer);
         trial.control = score (controlAudio, target, options.sampleRate);
 

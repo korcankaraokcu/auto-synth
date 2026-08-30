@@ -66,15 +66,22 @@ public:
         // default this exported everything about 6 dB quiet.
         static float gainToVolume (float linearGain) noexcept;
 
-        // Makeup applied to the master on the way out, in decibels.
+        // Trim applied to the master on the way out, in decibels.
         //
-        // Our `masterLevel` is normalised against the *source sample's peak*,
-        // which is a fact about the recording rather than a decision about how
-        // loud the patch should be -- a quietly-recorded note should not export
-        // as a quiet preset. Vital's own default sits at -6 dB, which is its
-        // headroom convention, so a peak-normalised patch belongs there rather
-        // than 6 dB under it.
-        static constexpr float kExportMakeupDb = 6.0f;
+        // Vital's oscillators arrive at the volume control at twice their
+        // stated amplitude. One oscillator at full level renders a peak of
+        // 1.998 with the control at 0 dB, and a pair at half level each renders
+        // 1.998 as well, so the factor is on the sum rather than on each of
+        // them. Asking for the patch's gain literally renders it 6 dB hot.
+        //
+        // That is not merely loud, because Vital limits its own output at about
+        // 2.1: the same patch at master 0.5 and 0.8 renders peaks of 1.998 and
+        // 2.100 -- four decibels asked for, a twentieth of a decibel delivered
+        // -- and the difference comes back as odd harmonics on what was a sine.
+        // The export was 12 dB over that ceiling, so every loud preset was being
+        // saturated by the synth, and nothing here could see it while the
+        // measurements were taken against an engine of our own.
+        static constexpr float kMasterTrimDb = -6.0f;
 
         // Our reverb `level` is a return gain; Vital's `reverb_dry_wet` is a
         // crossfade. This is the measured factor between them, and it is well
@@ -82,7 +89,7 @@ public:
         // considerable gain of its own, so a return of 0.1 is nothing like a
         // mix of 0.1.
         //
-        // Measured against the recordings rather than against this engine. One
+        // Measured against the recordings rather than against a fit. One
         // tenth of a second after the release, the tail of both source samples
         // sits at about 0.21 of the sustained level -- 0.218 for the clarinet,
         // 0.211 for the violin, which is closer agreement than expected from

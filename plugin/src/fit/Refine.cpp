@@ -1,7 +1,7 @@
 #include "fit/Refine.h"
 
 #include "analysis/Stft.h"
-#include "dsp/Voice.h"
+#include "dsp/Envelope.h"
 #include "fit/CmaEs.h"
 #include "fit/EnvelopeFit.h"
 
@@ -358,19 +358,14 @@ const std::map<std::string, Spec>& specTable()
             t[p + ".pulse_width"] = { p + ".pulse_width", 0.05, 0.95, false };
             t[p + ".unison_detune"] = { p + ".unison_detune", 0.0, 50.0, false };
             t[p + ".wave_morph"] = { p + ".wave_morph", 0.0, 1.0, false };
-            t[p + ".reverb_send"] = { p + ".reverb_send", 0.0, 1.0, false };
             addAdsr (p + ".env", 2.0);
-            t[p + ".filter.cutoff_hz"] = { p + ".filter.cutoff_hz", 30.0, 18000.0, true };
-            t[p + ".filter.resonance"] = { p + ".filter.resonance", 0.5, 8.0, true };
-            t[p + ".filter.env_amount"] = { p + ".filter.env_amount", -4.0, 4.0, false };
-            addAdsr (p + ".filter.env", 2.0);
         }
         addAdsr("amp_env", 2.0);
         // Only the amplitude envelope's, and only now that there is a
         // measurement of what it does: how much of the note is present fifty
         // milliseconds in. `fitAttackCurve` picks it from the contour and
-        // picks too gently -- this engine reaches 0.20 of its peak there where
-        // the clarinet recording is at 0.45 -- and before the onset term below
+        // picks too gently -- a fit reached 0.20 of its peak there where the
+        // clarinet recording is at 0.45 -- and before the onset term below
         // there was nothing for a search to improve.
         t["amp_env.attack_curve"] = { "amp_env.attack_curve", 0.0, 8.0, false };
         addAdsr("filter.env", 2.0);
@@ -418,10 +413,7 @@ Adsr* adsrFor (Patch& patch, const std::string& prefix)
         const auto index = prefix[5] - '0';
         if (index < 0 || index >= kNumOsc)
             return nullptr;
-        auto& osc = patch.oscs[static_cast<size_t> (index)];
-        const auto isFilterEnv = prefix.size() > 11
-                              && prefix.compare (prefix.size() - 11, 11, ".filter.env") == 0;
-        return isFilterEnv ? &osc.filter.env : &osc.env;
+        return &patch.oscs[static_cast<size_t> (index)].env;
     }
     return nullptr;
 }
@@ -470,15 +462,6 @@ double getParameter (const Patch& patch, const std::string& path)
         if (leaf == "pulse_width")   return osc.pulseWidth;
         if (leaf == "unison_detune") return osc.unisonDetune;
         if (leaf == "wave_morph")    return osc.waveMorph;
-        if (leaf == "reverb_send")   return osc.reverbSend;
-    }
-    if (prefix.size() == 13 && prefix.rfind ("oscs.", 0) == 0
-        && prefix.compare (6, 7, ".filter") == 0)
-    {
-        const auto& osc = patch.oscs[static_cast<size_t> (prefix[5] - '0')];
-        if (leaf == "cutoff_hz")  return osc.filter.cutoffHz;
-        if (leaf == "resonance")  return osc.filter.resonance;
-        if (leaf == "env_amount") return osc.filter.envAmount;
     }
     return 0.0;
 }
@@ -526,16 +509,7 @@ void setParameter (Patch& patch, const std::string& path, double value)
         else if (leaf == "pulse_width")   osc.pulseWidth = static_cast<float> (value);
         else if (leaf == "unison_detune") osc.unisonDetune = static_cast<float> (value);
         else if (leaf == "wave_morph")    osc.waveMorph = static_cast<float> (value);
-        else if (leaf == "reverb_send")   osc.reverbSend = static_cast<float> (value);
         return;
-    }
-    if (prefix.size() == 13 && prefix.rfind ("oscs.", 0) == 0
-        && prefix.compare (6, 7, ".filter") == 0)
-    {
-        auto& osc = patch.oscs[static_cast<size_t> (prefix[5] - '0')];
-        if (leaf == "cutoff_hz")       osc.filter.cutoffHz = static_cast<float> (value);
-        else if (leaf == "resonance")  osc.filter.resonance = static_cast<float> (value);
-        else if (leaf == "env_amount") osc.filter.envAmount = static_cast<float> (value);
     }
 }
 
@@ -578,18 +552,6 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
         paths.push_back (p + ".unison_detune");
         paths.push_back (p + ".wave_morph");
 
-        // Not `reverb_send`. Vital sends an oscillator somewhere -- a filter,
-        // the effects bus, straight out -- and has no per-oscillator send
-        // *level*, so a value searched here could never reach the preset. A
-        // parameter the deliverable cannot carry is one the optimiser should
-        // not spend its budget on: the objective is flat along that direction
-        // once the renderer is Vital, and merely misleading before then.
-        //
-        // Nor the oscillator's own filter, below, for the same reason plus a
-        // stronger one -- analysis never enables it. `PartialFit` leaves
-        // `filterEnabled` false on every path, so the only patches that ever
-        // had one came from this project's own random sampler and from a hand
-        // switch in the editor.
         // The wavetable is absent on purpose, frames and position alike. The
         // frames are a measurement, and the position is the trajectory that
         // measurement was taken along -- refining either would be re-deciding
@@ -599,7 +561,6 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
         if (osc.envEnabled)
             for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
                 paths.push_back (p + ".env." + leaf);
-
     }
 
     for (const char* leaf : { "attack", "decay", "sustain", "release", "curve", "attack_curve" })
@@ -671,8 +632,11 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     Result result;
     result.patch = patch;
 
+    // Nothing to optimise against without a synth. Refinement is a closed loop
+    // -- render, measure, adjust -- so a missing renderer is not a degraded
+    // mode, it is no mode at all.
     const auto scope = scopeFor (patch);
-    if (scope.size() < 2 || numSamples <= 0)
+    if (scope.size() < 2 || numSamples <= 0 || ! options.renderer)
         return result;
 
     const auto& table = specTable();
@@ -703,6 +667,7 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
         const auto detected = EnvelopeFit::detectGate (rms, times);
         gate = detected.oneShot ? duration : detected.time;
     }
+    result.gateSeconds = gate;
 
     // Noise is measured, and refinement may only sharpen it.
     //
@@ -821,23 +786,11 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
 
     const TargetFeatures features (target, numSamples, sampleRate, gate, patch.rootHz);
 
-    Engine engine;
-    engine.prepare (sampleRate, 512);
-
     const auto measure = [&] (const Patch& candidate)
     {
-        if (options.renderer)
-        {
-            const auto rendered = options.renderer (candidate, duration, gate);
-            return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate,
-                                   gate, candidate.rootHz);
-        }
-
-        engine.setPatch (candidate);
-        juce::AudioBuffer<float> buffer;
-        engine.renderOffline (buffer, candidate.rootHz, duration, gate);
-        return lossComponents (features, buffer.getReadPointer (0), buffer.getNumSamples(),
-                               sampleRate, gate, candidate.rootHz);
+        const auto rendered = options.renderer (candidate, duration, gate);
+        return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate,
+                               gate, candidate.rootHz);
     };
 
     // Adaptive weights: each term normalised by its own value at the starting

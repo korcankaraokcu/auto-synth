@@ -1,38 +1,37 @@
-// Renders a patch through Vital itself.
+// Renders, fits and evaluates through Vital itself.
 //
-// Until now the exporter's output could only be checked by reading it: the
-// preset loaded, the parameters were in range, and whether it *sounded* like
-// the fit was a question for a listener. That gap is not small -- "vital export
-// sounds a bit different" is the one report no measurement here could confirm
-// or deny -- and it is structural, because refinement optimises against this
-// project's engine and the preset is then played by a different synth.
+// This is the only thing in the project that makes a sound. The exporter's
+// output was once checkable only by reading it -- the preset loaded, the
+// parameters were in range, and whether it *sounded* like the fit was a
+// question for a listener -- and "the export sounds a bit different" was the
+// one report no measurement here could confirm or deny.
 //
-// Hosting the installed VST3 closes it without a submodule and without a build
-// dependency. Vital's plugin state chunk *is* the preset JSON -- its
+// Hosting the installed VST3 closes that without a submodule and without a
+// build dependency. Vital's plugin state chunk *is* the preset JSON -- its
 // getStateInformation calls LoadSave::stateToJson, the same function that
 // writes a .vital file -- so the exported text can be handed to the plugin
 // directly, which tests the exporter end to end rather than a re-encoding of
-// it.
+// it. `src/vital/VitalHost.h` is the hosting; this file is the command line
+// around it.
 //
 // It renders the version that is installed, which is the version the presets
 // will actually be opened in. That is a feature rather than a compromise: a
 // submodule would render the public source drop, which is not necessarily the
 // same engine.
 //
-// Usage mirrors autosynth_render, so the two outputs are comparable:
 //   autosynth_vital patch.json out.wav [--note 220] [--dur 2.0] [--gate 1.5]
 //                   [--sr 48000] [--plugin path/to/Vital.vst3] [--preset out.vital]
 //
-// The comparison itself is autosynth_diff's job:
-//   autosynth_render patch.json ours.wav
-//   autosynth_vital  patch.json theirs.wav
-//   autosynth_diff   ours.wav   theirs.wav
+// How close the result is to the recording is autosynth_diff's job:
+//   autosynth_vital fitted.json out.wav --fit samples/violin.wav
+//   autosynth_diff  samples/violin.wav  out.wav
 
 #include "eval/Recovery.h"
 #include "fit/PartialFit.h"
 #include "fit/Refine.h"
 #include "ir/Patch.h"
 #include "ir/VitalExport.h"
+#include "vital/VitalHost.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -70,8 +69,8 @@ struct Args
     }
 };
 
-// Hand-parsed for the same reason autosynth_render is: juce::ArgumentList
-// treats an option's value as a separate positional argument.
+// Hand-parsed because juce::ArgumentList treats an option's value as a separate
+// positional argument.
 Args parseArgs (int argc, char* argv[])
 {
     Args out;
@@ -101,53 +100,6 @@ Args parseArgs (int argc, char* argv[])
         out.options[key] = value;
     }
     return out;
-}
-
-// Wherever this platform keeps its VST3s, asked rather than assumed.
-//
-// The first version listed the two Windows paths literally, which worked here
-// and would have found nothing on any other machine. JUCE already knows the
-// standard locations for each platform -- and picks up any the user has
-// configured -- so the list is its business rather than this file's.
-juce::File findVital (const juce::String& override)
-{
-    if (override.isNotEmpty())
-        return juce::File::getCurrentWorkingDirectory().getChildFile (override);
-
-    juce::VST3PluginFormat format;
-    const auto search = format.getDefaultLocationsToSearch();
-
-    for (int i = 0; i < search.getNumPaths(); ++i)
-    {
-        const auto candidate = search[i].getChildFile ("Vital.vst3");
-        if (candidate.exists())
-            return candidate;
-    }
-
-    return {};
-}
-
-// Vital's plugin state chunk is the preset JSON, but a *hosted* plugin's is
-// not: JUCE's VST3 host wraps the component and controller states as base64
-// inside an XML document, and its setStateInformation quietly does nothing at
-// all when handed anything else -- getXmlFromBinary returns null and there is
-// no error path. Passing the preset text directly therefore rendered Vital's
-// init patch while reporting success, which is a failure only an actual
-// measurement catches.
-//
-// Wrapping it puts the JSON where the chain expects it. Vital's own VST3
-// wrapper reads the component stream back out and passes those bytes to its
-// AudioProcessor::setStateInformation, which is the preset loader.
-juce::MemoryBlock wrapAsVst3State (const juce::String& json)
-{
-    const juce::MemoryBlock component (json.toRawUTF8(), json.getNumBytesAsUTF8());
-
-    juce::XmlElement state ("VST3PluginState");
-    state.createNewChildElement ("IComponent")->addTextElement (component.toBase64Encoding());
-
-    juce::MemoryBlock wrapped;
-    juce::AudioProcessor::copyXmlToBinary (state, wrapped);
-    return wrapped;
 }
 
 std::vector<float> readMono (const juce::File& file, double& sampleRateOut)
@@ -274,95 +226,18 @@ int main (int argc, char* argv[])
     const auto duration = args.value ("--dur", 2.0);
     const auto gate = args.value ("--gate", 1.5);
 
-    const auto pluginFile = findVital (args.text ("--plugin"));
-    if (pluginFile == juce::File() || ! pluginFile.exists())
+    autosynth::VitalHost host;
+    juce::String hostError;
+    if (! host.open (sampleRate, hostError, args.text ("--plugin")))
     {
-        std::fprintf (stderr, "error: Vital.vst3 not found; pass --plugin <path>\n");
+        std::fprintf (stderr, "error: %s\n", hostError.toRawUTF8());
         return 1;
     }
 
-    juce::VST3PluginFormat format;
-    juce::OwnedArray<juce::PluginDescription> descriptions;
-    format.findAllTypesForFile (descriptions, pluginFile.getFullPathName());
-    if (descriptions.isEmpty())
-    {
-        std::fprintf (stderr, "error: no plugin types in %s\n",
-                      pluginFile.getFullPathName().toRawUTF8());
-        return 1;
-    }
+    auto* plugin = host.plugin();
 
-    // A VST3 bundle can hold several entries; the instrument is the one to
-    // play. Vital ships an effect build too under the same format.
-    const juce::PluginDescription* chosen = descriptions[0];
-    for (const auto* description : descriptions)
-        if (description->isInstrument)
-        {
-            chosen = description;
-            break;
-        }
-
-    const int blockSize = 512;
-    juce::AudioPluginFormatManager formats;
-    formats.addFormat (new juce::VST3PluginFormat());
-
-    juce::String createError;
-    std::unique_ptr<juce::AudioPluginInstance> plugin (
-        formats.createPluginInstance (*chosen, sampleRate, blockSize, createError));
-    if (plugin == nullptr)
-    {
-        std::fprintf (stderr, "error: could not instantiate: %s\n", createError.toRawUTF8());
-        return 1;
-    }
-
-    plugin->enableAllBuses();
-    plugin->setNonRealtime (true);
-    plugin->prepareToPlay (sampleRate, blockSize);
-
-    // Loading a preset, as its own step so it can be timed and repeated.
-    //
-    // The settle gives the plugin's message thread a turn, on the theory that
-    // loading might not be synchronous -- a wavetable could be built on an
-    // async update, and a console host that never dispatches would then render
-    // whatever was loaded before the state arrived.
-    //
-    // Measured, it is not needed: rendering the same patch at settles of 0, 10,
-    // 50, 100 and 200 ms gives five bit-identical files, and that includes the
-    // first load of each process, which is a cold load into a plugin still
-    // holding its init patch. So the load is synchronous and the wait was
-    // costing 200 ms per evaluation for nothing -- half the per-evaluation
-    // budget, which is what makes it worth knowing.
-    //
-    // The flag stays because the failure it guards against would be silent, and
-    // this is the knob to reach for if a future preset renders as the init
-    // patch. `--dump-state` is the other one.
-    const auto settleMs = (int) args.value ("--settle", 0.0);
-    const auto loadJson = [&] (const juce::String& json)
-    {
-        const auto wrapped = wrapAsVst3State (json);
-        plugin->setStateInformation (wrapped.getData(), (int) wrapped.getSize());
-        if (settleMs > 0)
-            juce::MessageManager::getInstance()->runDispatchLoopUntil (settleMs);
-        // Loading a preset can reallocate the engine; prepare again so it is
-        // configured for this rate whatever the state did.
-        plugin->prepareToPlay (sampleRate, blockSize);
-
-        // Flush what the last render left ringing.
-        //
-        // Without this, evaluation N begins inside evaluation N-1's reverb
-        // tail: rendering one patch six times gave renders differing by 0.035
-        // at the sample, which is exactly this patch's tail level and not a
-        // coincidence. Every candidate would have been scored against a
-        // different amount of the previous candidate's decay, which is a
-        // dependence on evaluation *order* -- the kind of thing that makes an
-        // optimiser's path irreproducible rather than merely noisy.
-        plugin->reset();
-
-    };
-
-    const auto loadPreset = [&] (const autosynth::Patch& p)
-    {
-        loadJson (autosynth::VitalExport::toJson (p, p.name));
-    };
+    const auto loadJson = [&] (const juce::String& json) { host.loadJson (json); };
+    const auto loadPreset = [&] (const autosynth::Patch& p) { host.loadPreset (p); };
 
     // Every parameter the host can see, as the plug-in currently holds them.
     const auto snapshot = [&]
@@ -374,96 +249,30 @@ int main (int argc, char* argv[])
         return values;
     };
 
-    // One rendered note, which is both the deliverable and, when fitting, one
-    // evaluation of the objective.
-    //
-    // Vital is played rather than tuned to a frequency: it gets a MIDI note.
-    // Rounding to the nearest and reporting the exact frequency of *that* note
-    // is what makes the output comparable with autosynth_render -- otherwise
-    // the diff reads up to half a semitone of pitch error that neither synth
-    // committed.
-    const auto noteFor = [] (double hz)
-    {
-        return juce::jlimit (0, 127, (int) std::lround (69.0 + 12.0 * std::log2 (hz / 440.0)));
-    };
+    const auto noteFor = [] (double hz) { return autosynth::VitalHost::noteFor (hz); };
 
-    // Rendering whatever the plug-in is currently holding.
     const auto renderLoaded = [&] (double noteHz, double dur, double gateSeconds)
     {
-        const auto midiNote = noteFor (noteHz);
-
-        // Reported latency is trimmed from the front rather than ignored,
-        // because the diff measures attack time and a few hundred samples of it
-        // is a measurable slower-attack verdict that nothing in the patch
-        // caused.
-        const auto latency = juce::jmax (0, plugin->getLatencySamples());
-        const auto wanted = (int) std::ceil (dur * sampleRate);
-        const auto total = wanted + latency;
-        const auto gateSample = (int) std::lround (gateSeconds * sampleRate) + latency;
-        const auto channels = juce::jmax (1, plugin->getTotalNumOutputChannels());
-
-        std::vector<float> collected ((size_t) total, 0.0f);
-        juce::AudioBuffer<float> block (channels, blockSize);
-        bool noteStarted = false, noteStopped = false;
-
-        for (int position = 0; position < total; position += blockSize)
-        {
-            const auto thisBlock = juce::jmin (blockSize, total - position);
-            block.clear();
-
-            juce::MidiBuffer midi;
-            if (! noteStarted && position + thisBlock > latency)
-            {
-                midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, 1.0f),
-                               juce::jmax (0, latency - position));
-                noteStarted = true;
-            }
-            if (! noteStopped && noteStarted && position + thisBlock > gateSample)
-            {
-                midi.addEvent (juce::MidiMessage::noteOff (1, midiNote),
-                               juce::jlimit (0, thisBlock - 1, gateSample - position));
-                noteStopped = true;
-            }
-
-            juce::AudioBuffer<float> view (block.getArrayOfWritePointers(), channels, 0, thisBlock);
-            plugin->processBlock (view, midi);
-
-            // Mono by averaging rather than taking the left channel: Vital's
-            // unison and its effects spread energy across the pair, and one
-            // channel of a stereo-spread patch is not the same signal.
-            for (int i = 0; i < thisBlock; ++i)
-            {
-                float sum = 0.0f;
-                for (int ch = 0; ch < channels; ++ch)
-                    sum += view.getSample (ch, i);
-                collected[(size_t) (position + i)] = sum / (float) channels;
-            }
-        }
-
-        return std::vector<float> (collected.begin() + latency, collected.begin() + latency + wanted);
+        return host.renderLoaded (noteHz, dur, gateSeconds);
     };
-
-    // The first render of a process is not like the others: it begins with a
-    // silent reverb where every later one begins in whatever the previous
-    // render left behind. Refinement takes the loss of its starting patch as
-    // the reference that normalises every term's weight, so letting that one
-    // evaluation see different conditions from the other hundred and ninety-one
-    // skews the whole objective. One discarded render makes them all alike.
-    auto warmedUp = false;
 
     const auto renderPatch = [&] (const autosynth::Patch& p, double noteHz,
                                   double dur, double gateSeconds)
     {
-        loadPreset (p);
+        return host.render (p, noteHz, dur, gateSeconds);
+    };
 
-        if (! warmedUp)
-        {
-            warmedUp = true;
-            renderLoaded (noteHz, dur, gateSeconds);
-            loadPreset (p);
-        }
-
-        return renderLoaded (noteHz, dur, gateSeconds);
+    // The renderer, in the form everything closed-loop takes it, built once.
+    //
+    // Once because handing it to some callers and not others is a silent
+    // failure rather than a loud one: analysis skips its level and noise
+    // calibration without a renderer, so a fit missing it comes back with the
+    // levels the factorisation happened to leave and no noise at all, and looks
+    // like a fit the whole way.
+    const autosynth::Renderer renderer = [&] (const autosynth::Patch& p,
+                                              double dur, double gateSeconds)
+    {
+        return renderPatch (p, p.rootHz, dur, gateSeconds);
     };
 
     // Which searchable parameters actually move the sound Vital makes.
@@ -562,9 +371,10 @@ int main (int argc, char* argv[])
     // cannot converge, and there is nothing in a rendered note that says so.
     if (args.options.count ("--check-repeatable") > 0)
     {
-        // renderPatch discards a warm-up render on its first call, so both of
-        // these begin from the same reverb state -- which is the state every
-        // evaluation of a fit begins from, and therefore the one worth checking.
+        // Both of these begin from the same state: every render settles the
+        // plug-in first, and the very first one of a process is discarded --
+        // which is the state every evaluation of a fit begins from, and
+        // therefore the one worth checking.
         const auto first = renderPatch (patch, patch.rootHz, duration, gate);
         const auto second = renderPatch (patch, patch.rootHz, duration, gate);
 
@@ -585,17 +395,15 @@ int main (int argc, char* argv[])
 
     // The recovery harness, with Vital as the synth being measured.
     //
-    // Not the same question autosynth_eval asks. That one renders targets from
-    // this engine and checks the fitter gets its parameters back, which is
-    // blind to everything the other synth does differently. This moves the
-    // whole experiment into Vital's world: random patches rendered *by Vital*
-    // are the targets, and the control and every refinement candidate are
-    // rendered there too. For a project whose deliverable is a preset for
-    // someone else's synth, that is the question worth answering.
+    // Random patches rendered *by Vital* are the targets, and the control and
+    // every refinement candidate are rendered there too. For a project whose
+    // deliverable is a preset for someone else's synth, that is the question
+    // worth answering.
     //
-    // Read against autosynth_eval's own control rather than against its fitted
-    // scores. Different targets, so the absolute numbers are not comparable;
-    // what compares is how far each run beats the control it ran with.
+    // Read against the control of the same run rather than against another
+    // run's fitted scores: the targets are a different random draw each time,
+    // so the absolute numbers are not comparable and the margin over the
+    // control is.
     if (evaluating)
     {
         autosynth::Recovery::Options evalOptions;
@@ -604,10 +412,7 @@ int main (int argc, char* argv[])
         evalOptions.sampleRate = sampleRate;
         evalOptions.refineEvaluations = (int) args.value ("--refine-evals", 192.0);
         evalOptions.refine = args.value ("--no-refine", 0.0) == 0.0;
-        evalOptions.renderer = [&] (const autosynth::Patch& p, double dur, double gateSeconds)
-        {
-            return renderPatch (p, p.rootHz, dur, gateSeconds);
-        };
+        evalOptions.renderer = renderer;
 
         const auto started = juce::Time::getMillisecondCounterHiRes();
         const auto summary = autosynth::Recovery::run (evalOptions);
@@ -620,26 +425,23 @@ int main (int argc, char* argv[])
 
     // Fitting, with Vital as the renderer.
     //
-    // This is the point of the whole exercise: analysis decides the structure
-    // as before, and refinement then lands the values against the synth that
-    // will actually play them. Every difference between this engine and Vital
-    // stops needing to be found and hand-corrected in the exporter, because the
-    // optimiser is measuring the real output.
+    // This is the point of the whole exercise: analysis decides the structure,
+    // and refinement then lands the values against the synth that will actually
+    // play them. Nothing has to be found and hand-corrected in the exporter to
+    // account for a second synth's differences, because the optimiser is
+    // measuring the real output.
     if (fitting)
     {
         autosynth::PartialFit::Options fitOptions;
         fitOptions.gateSeconds = gate;
+        fitOptions.renderer = renderer;
         patch = autosynth::PartialFit::fit (target.data(), (int) target.size(),
                                             sampleRate, fitOptions);
 
         autosynth::Refine::Options refineOptions;
         refineOptions.maxEvaluations = (int) args.value ("--refine-evals", 192.0);
         refineOptions.gateSeconds = gate;
-        refineOptions.renderer = [&] (const autosynth::Patch& candidate,
-                                      double dur, double gateSeconds)
-        {
-            return renderPatch (candidate, candidate.rootHz, dur, gateSeconds);
-        };
+        refineOptions.renderer = renderer;
 
         const auto started = juce::Time::getMillisecondCounterHiRes();
         const auto refined = autosynth::Refine::run (patch, target.data(), (int) target.size(),
@@ -730,11 +532,11 @@ int main (int argc, char* argv[])
 
         // The load is counted twice over -- renderPatch loads too -- so the
         // render figure is the pair and the load figure is one of them.
-        std::printf ("timing over %d evaluations at settle %d ms:\n"
+        std::printf ("timing over %d evaluations:\n"
                      "  preset load %7.1f ms each\n"
                      "  load+render %7.1f ms each (%.2f s of audio)\n"
                      "  one evaluation %7.1f ms -> %.1f s for 192\n",
-                     repeat, settleMs, loadMs / repeat, renderMs / repeat, duration,
+                     repeat, loadMs / repeat, renderMs / repeat, duration,
                      renderMs / repeat, renderMs / repeat * 192.0 / 1000.0);
     }
 
@@ -742,10 +544,9 @@ int main (int argc, char* argv[])
     buffer.copyFrom (0, 0, rendered.data(), (int) rendered.size());
 
     plugin->releaseResources();
-    plugin.reset();
 
-    // Peak-limit rather than normalise, matching autosynth_render: the absolute
-    // level is part of what the comparison is checking.
+    // Peak-limit rather than normalise: the absolute level is part of what the
+    // comparison is checking.
     auto peak = 0.0f;
     for (int i = 0; i < buffer.getNumSamples(); ++i)
         peak = juce::jmax (peak, std::abs (buffer.getSample (0, i)));
@@ -775,7 +576,7 @@ int main (int argc, char* argv[])
     writer.reset();
 
     std::printf ("rendered %s through %s at note %d (%.2f Hz, asked %.2f) -> %s (%.2fs, peak %.3f)\n",
-                 patch.name.toRawUTF8(), chosen->name.toRawUTF8(), midiNote, renderedHz,
+                 patch.name.toRawUTF8(), plugin->getName().toRawUTF8(), midiNote, renderedHz,
                  requestedHz, outFile.getFullPathName().toRawUTF8(),
                  buffer.getNumSamples() / sampleRate, peak);
     return 0;

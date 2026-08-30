@@ -31,8 +31,8 @@ namespace autosynth
 //     populations and must not be diffed. Read a fitted score against the
 //     control from its own run.
 //
-// What it cannot see: it generates targets by rendering this engine, so it only
-// ever tests sounds this engine can already make. It measures how well we solve
+// What it cannot see: its targets are random patches, so it only ever tests
+// sounds the parameterisation can already make. It measures how well we solve
 // the *inverse* problem and is structurally blind to the modelling gap --
 // everything a real recording contains that the parameterisation cannot
 // express. A real sample tells you *that* something is wrong; this tells you

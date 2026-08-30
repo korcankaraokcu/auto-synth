@@ -1,6 +1,5 @@
 #pragma once
 
-#include "dsp/Voice.h"
 #include "ir/Patch.h"
 #include <vector>
 
@@ -48,6 +47,11 @@ public:
         int hop = 256;
         int maxOscillators = kNumOsc;
         double tolCents = 50.0;
+
+        // Both level calibrations render, so fitting needs a synth as much as
+        // refinement does. Without one they are skipped and the levels stay as
+        // the factorisation left them, which is a scale nobody has checked.
+        Renderer renderer;
     };
 
     static Patch fit (const float* samples, int numSamples, double sampleRate,
@@ -60,6 +64,7 @@ public:
     // waveform tables are peak-normalised in time, not by harmonic amplitude.
     static Patch calibrateLevels (Patch patch, const float* target, int numSamples,
                                   double sampleRate, double gateSeconds,
+                                  const Renderer& renderer,
                                   float noiseCeiling = kMaxPitchedNoise);
 
     // Sets the noise level so the *rendered* result carries as much
@@ -75,7 +80,8 @@ public:
     // passes are enough because the relationship is close to proportional, and
     // it is the same measurement `autosynth_diff` prints as noisiness.
     static Patch calibrateNoise (Patch patch, const float* target, int numSamples,
-                                 double sampleRate, double gateSeconds, float ceiling);
+                                 double sampleRate, double gateSeconds, float ceiling,
+                                 const Renderer& renderer);
 };
 
 } // namespace autosynth

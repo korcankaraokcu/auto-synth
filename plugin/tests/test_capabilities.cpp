@@ -1,11 +1,15 @@
-// The oscillator capabilities added after the first working plugin: a filter
-// per oscillator, a second LFO slot, wavetable morph, and a per-oscillator
-// reverb send.
+// What the patch format can express and the preset can carry: a second LFO
+// slot, wavetable morph, and the scope refinement is allowed to search.
 //
 // Each is checked the same way -- against the patch with that one feature
 // switched off -- because the failure mode these guard against is not a wrong
 // number but a control that does nothing at all. Three of them were, in fact,
 // silently doing nothing, and every test in the suite still passed.
+//
+// The per-oscillator filter and reverb send used to be checked here too. They
+// are gone from the patch format: a Vital preset has two filters and a routing
+// choice rather than one filter per oscillator, and no per-oscillator send
+// level at all, so both were fields that could be set and never heard.
 
 #include "Helpers.h"
 
@@ -16,82 +20,6 @@
 
 using namespace autotest;
 using namespace autosynth;
-
-// --- per-oscillator filter -------------------------------------------------
-
-TEST_CASE ("a per-oscillator filter changes only its own oscillator", "[capabilities]")
-{
-    auto base = simplePatch (Waveform::saw);
-    base.oscs[1].enabled = true;
-    base.oscs[1].level = 1.0f;
-    base.oscs[1].semitones = 12;
-
-    auto shaped = base;
-    shaped.oscs[0].filterEnabled = true;
-    shaped.oscs[0].filter.type = FilterType::lowpass;
-    shaped.oscs[0].filter.cutoffHz = 300.0f;
-
-    const auto plain = render (base);
-    const auto out = render (shaped);
-
-    CHECK (meanCentroidHz (out) < meanCentroidHz (plain));
-
-    // The octave above must survive: a global filter would have taken it too.
-    CHECK (bandEnergy (out, 400.0, 500.0) > 0.4 * bandEnergy (plain, 400.0, 500.0));
-}
-
-TEST_CASE ("a disabled per-oscillator filter is an exact no-op", "[capabilities]")
-{
-    auto patch = simplePatch (Waveform::saw);
-    auto configured = patch;
-    configured.oscs[0].filterEnabled = false;
-    configured.oscs[0].filter.type = FilterType::lowpass;
-    configured.oscs[0].filter.cutoffHz = 200.0f;
-
-    const auto a = render (patch);
-    const auto b = render (configured);
-    REQUIRE (a.size() == b.size());
-    for (size_t i = 0; i < a.size(); ++i)
-        REQUIRE (a[i] == Catch::Approx (b[i]));
-}
-
-TEST_CASE ("a per-oscillator filter type of off is an exact no-op", "[capabilities]")
-{
-    auto patch = simplePatch (Waveform::saw);
-    auto configured = patch;
-    configured.oscs[0].filterEnabled = true;
-    configured.oscs[0].filter.type = FilterType::off;
-
-    const auto a = render (patch);
-    const auto b = render (configured);
-    REQUIRE (a.size() == b.size());
-    for (size_t i = 0; i < a.size(); ++i)
-        REQUIRE (a[i] == Catch::Approx (b[i]));
-}
-
-TEST_CASE ("per-oscillator filters can differ between oscillators", "[capabilities]")
-{
-    // The whole reason the filter is per-oscillator: two layers with different
-    // tone. If the implementation shared one filter instance between them, the
-    // second would inherit the first's state and this would collapse.
-    auto both = simplePatch (Waveform::saw);
-    both.oscs[1].enabled = true;
-    both.oscs[1].level = 1.0f;
-    both.oscs[1].semitones = 12;
-
-    both.oscs[0].filterEnabled = true;
-    both.oscs[0].filter.type = FilterType::lowpass;
-    both.oscs[0].filter.cutoffHz = 400.0f;
-
-    both.oscs[1].filterEnabled = true;
-    both.oscs[1].filter.type = FilterType::highpass;
-    both.oscs[1].filter.cutoffHz = 2000.0f;
-
-    auto swapped = both;
-    std::swap (swapped.oscs[0].filter, swapped.oscs[1].filter);
-
-    CHECK (centroidDistanceOctaves (render (both), render (swapped)) > 0.05);
-}
 
 // --- second LFO slot -------------------------------------------------------
 
@@ -133,7 +61,7 @@ TEST_CASE ("an LFO with zero depth is an exact no-op", "[capabilities]")
     const auto b = render (configured);
     REQUIRE (a.size() == b.size());
     for (size_t i = 0; i < a.size(); ++i)
-        REQUIRE (a[i] == Catch::Approx (b[i]));
+        REQUIRE (a[i] == Catch::Approx (b[i]).margin (kRenderFloor));
 }
 
 // --- wavetable morph -------------------------------------------------------
@@ -149,7 +77,7 @@ TEST_CASE ("morph at zero is exactly the first waveform", "[capabilities]")
     const auto b = render (configured);
     REQUIRE (a.size() == b.size());
     for (size_t i = 0; i < a.size(); ++i)
-        REQUIRE (a[i] == Catch::Approx (b[i]));
+        REQUIRE (a[i] == Catch::Approx (b[i]).margin (kRenderFloor));
 }
 
 TEST_CASE ("morph at one is the second waveform", "[capabilities]")
@@ -180,80 +108,13 @@ TEST_CASE ("morph is continuous between the two", "[capabilities]")
     CHECK (mid < high);
 }
 
-// --- reverb send -----------------------------------------------------------
-
-TEST_CASE ("the reverb send is per-oscillator", "[capabilities]")
-{
-    // One layer drenched, another dry -- the reason to want reverb "on an
-    // oscillator" at all. A single shared send would make these identical.
-    auto base = simplePatch (Waveform::saw);
-    base.ampEnv = { 0.001f, 0.06f, 0.0f, 0.01f, 0.0f };
-    base.oscs[1].enabled = true;
-    base.oscs[1].level = 1.0f;
-    base.oscs[1].semitones = 12;
-    base.reverb = { true, 0.8f, 0.3f, 0.8f };
-
-    auto firstWet = base;
-    firstWet.oscs[0].reverbSend = 1.0f;
-    firstWet.oscs[1].reverbSend = 0.0f;
-
-    auto secondWet = base;
-    secondWet.oscs[0].reverbSend = 0.0f;
-    secondWet.oscs[1].reverbSend = 1.0f;
-
-    // The tails carry different material, so they must sound different.
-    CHECK (centroidDistanceOctaves (render (firstWet), render (secondWet)) > 0.05);
-}
-
-TEST_CASE ("a disabled reverb is an exact no-op regardless of send", "[capabilities]")
-{
-    auto patch = simplePatch (Waveform::saw);
-    patch.oscs[0].reverbSend = 1.0f;
-
-    auto configured = patch;
-    configured.reverb = { false, 0.9f, 0.5f, 1.0f };
-
-    const auto a = render (patch);
-    const auto b = render (configured);
-    REQUIRE (a.size() == b.size());
-    for (size_t i = 0; i < a.size(); ++i)
-        REQUIRE (a[i] == Catch::Approx (b[i]));
-}
-
-TEST_CASE ("reverb level acts as a return gain, not a dry/wet balance", "[capabilities]")
-{
-    // The dry path must not lose anything when the send is raised: the mix is
-    // already whatever the sends did not take. If `level` crossfaded instead,
-    // raising it would thin the direct sound.
-    auto dry = simplePatch (Waveform::saw);
-    dry.ampEnv = { 0.001f, 0.06f, 0.0f, 0.01f, 0.0f };
-
-    auto wet = dry;
-    wet.reverb = { true, 0.8f, 0.3f, 0.8f };
-    wet.oscs[0].reverbSend = 1.0f;
-
-    const auto dryOut = render (dry);
-    const auto wetOut = render (wet);
-
-    // Early in the note, before any tail has built up, the two must agree
-    // closely -- the reverb adds, it does not subtract.
-    const auto head = (size_t) (0.02 * kSampleRate);
-    double dryHead = 0.0, wetHead = 0.0;
-    for (size_t i = 0; i < head && i < dryOut.size(); ++i)
-    {
-        dryHead += std::abs (dryOut[i]);
-        wetHead += std::abs (wetOut[i]);
-    }
-    CHECK (wetHead > 0.8 * dryHead);
-}
+// --- search scope ----------------------------------------------------------
 
 TEST_CASE ("refinement searches only what the deliverable can carry", "[capabilities]")
 {
     auto patch = simplePatch (Waveform::saw);
     patch.oscs[1].enabled = true;
     patch.oscs[1].level = 0.5f;
-    patch.oscs[0].filterEnabled = true;
-    patch.oscs[0].filter.type = autosynth::FilterType::lowpass;
 
     const auto scope = Refine::scopeFor (patch);
     const auto has = [&scope] (const std::string& needle)
@@ -270,21 +131,9 @@ TEST_CASE ("refinement searches only what the deliverable can carry", "[capabili
     CHECK (has ("oscs.1.level"));
     CHECK_FALSE (has ("oscs.2.level"));
 
-    // The per-oscillator reverb send and filter are deliberately absent, and
-    // this test used to assert the opposite.
-    //
-    // A Vital preset can send an oscillator to a filter, to the effects bus or
-    // straight out, but it has no per-oscillator send *level* and no filter per
-    // oscillator -- it has two filters and a routing choice. A value searched
-    // here could never reach the preset, so the objective is flat along it once
-    // the renderer is Vital and merely misleading before then.
-    //
-    // The filter has a second reason: analysis never enables it. `PartialFit`
-    // leaves `filterEnabled` false on every path, so the only patches that ever
-    // carried one came from the random sampler in the recovery harness and from
-    // a hand switch in the editor.
+    // Nothing the preset cannot carry, stated as names rather than as a count
+    // so a parameter reintroduced by accident is named in the failure.
     CHECK_FALSE (has ("oscs.0.reverb_send"));
-    CHECK_FALSE (has ("oscs.1.reverb_send"));
     CHECK_FALSE (has ("oscs.0.filter.cutoff_hz"));
-    CHECK_FALSE (has ("oscs.0.filter.env.attack"));
+    CHECK_FALSE (has ("oscs.0.frame_position"));
 }

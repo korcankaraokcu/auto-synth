@@ -31,7 +31,7 @@ constexpr float kLfoRateSpan = 16.0f;
 // Resampling would need a filter and would land a sample short at the seam,
 // which is where a wavetable is least forgiving -- the loop point is heard on
 // every cycle.
-juce::String frameToBase64 (const std::array<float, Oscillator::kFrameHarmonics>& harmonics)
+juce::String frameToBase64 (const std::vector<float>& harmonics)
 {
     constexpr auto n = VitalExport::Mapping::kFrameSamples;
     constexpr auto order = 11;   // 2^11 == 2048
@@ -68,27 +68,33 @@ juce::String frameToBase64 (const std::array<float, Oscillator::kFrameHarmonics>
 }
 
 // The harmonics a frame stands for: its own if drawn, its generator's if not.
-std::array<float, Oscillator::kFrameHarmonics> harmonicsOf (const Oscillator& osc, int frame)
+//
+// A drawn frame is sixteen numbers because that is what was measured into it. A
+// generated one is not: a saw is a saw, not its first sixteen harmonics, and
+// truncating it there threw away everything above the sixteenth -- at 220 Hz,
+// the whole band above 3.5 kHz. Exported that way a saw and a saw drawn out as
+// sixteen numbers rendered to the same audio, which is how the loss was found.
+// Generated frames therefore carry every harmonic the frame can hold.
+std::vector<float> harmonicsOf (const Oscillator& osc, int frame)
 {
     const auto& f = osc.frames[static_cast<size_t> (juce::jlimit (0, Oscillator::kMaxFrames - 1, frame))];
     if (f.custom)
-        return f.harmonics;
+        return { f.harmonics.begin(), f.harmonics.end() };
 
-    std::array<float, Oscillator::kFrameHarmonics> out {};
+    // One short of the frame's own Nyquist, which is what a 2048-point frame
+    // can represent. Vital band-limits per octave when it plays.
+    constexpr int kGeneratedHarmonics = VitalExport::Mapping::kFrameSamples / 2 - 1;
+
     if (osc.waveform == Waveform::noise)
     {
         // Vital's noise is a separate oscillator type, not a wavetable. A flat
         // spectrum is the closest a wavetable gets, and it is at least the right
         // colour.
-        out.fill (1.0f);
-        return out;
+        return std::vector<float> ((size_t) kGeneratedHarmonics, 1.0f);
     }
 
-    const auto amps = WaveTables::blendedHarmonics (osc.waveform, osc.waveformB, osc.waveMorph,
-                                                    osc.pulseWidth, Oscillator::kFrameHarmonics);
-    for (size_t k = 0; k < out.size() && k < amps.size(); ++k)
-        out[k] = amps[k];
-    return out;
+    return WaveTables::blendedHarmonics (osc.waveform, osc.waveformB, osc.waveMorph,
+                                         osc.pulseWidth, kGeneratedHarmonics);
 }
 
 juce::var wavetableFor (const Oscillator& osc, const juce::String& name)
@@ -118,7 +124,7 @@ juce::var wavetableFor (const Oscillator& osc, const juce::String& name)
     auto* component = new juce::DynamicObject();
     component->setProperty ("type", "Wave Source");
     component->setProperty ("keyframes", juce::var (keyframes));
-    component->setProperty ("interpolation", 1);          // linear, as our engine does
+    component->setProperty ("interpolation", 1);          // linear
     component->setProperty ("interpolation_style", 1);
 
     juce::Array<juce::var> components;
@@ -163,8 +169,9 @@ void addAdsr (juce::DynamicObject& settings, const juce::String& prefix, const A
     // The sustain is handled by writing its square root; the attack needs the
     // same idea applied to a shape rather than a number. Squaring a rise makes
     // it slower early, so the curve written has to be the *square root* of the
-    // one fitted -- and the square root of this engine's exponential-approach
-    // shape is close to the same shape with a constant added to its rate.
+    // one fitted -- and the square root of the patch model's
+    // exponential-approach shape is close to the same shape with a constant
+    // added to its rate.
     //
     // Measured rather than derived: with the correction absent, both presets
     // sit at 0.02 of their peak fifty milliseconds in where the recordings are
@@ -225,8 +232,8 @@ juce::var defaultLfoShapes()
 // becomes the noise: Vital's oscillators are wavetables and have no noise mode,
 // so the sampler is the only continuous broadband source it owns. Rendering
 // through Vital measured the cost of leaving it silent -- the violin's noise
-// read 0.171 in this engine and 0.048 in Vital, which is most of what "it
-// sounds a bit different" was.
+// read 0.171 as fitted and 0.048 in Vital, which is most of what "it sounds a
+// bit different" was.
 //
 // One second, looped. The loop is inaudible because the content is noise, and a
 // fixed seed keeps the export reproducible -- an exporter that emits different
@@ -292,7 +299,7 @@ float VitalExport::Mapping::gainToVolume (float linearGain) noexcept
 {
     if (linearGain <= 1.0e-5f)
         return 0.0f;
-    const auto db = 20.0f * std::log10 (linearGain) + kExportMakeupDb;
+    const auto db = 20.0f * std::log10 (linearGain) + kMasterTrimDb;
     return juce::jlimit (0.0f, 7399.4404f, (db + 80.0f) * (db + 80.0f));
 }
 
@@ -333,8 +340,15 @@ float VitalExport::Mapping::centsToTune (float cents) noexcept
 
 float VitalExport::Mapping::detuneToUnison (float cents) noexcept
 {
-    // Quadratic, so the stored value is the square root of the percentage.
-    return juce::jlimit (0.0f, 10.0f, std::sqrt (juce::jmax (0.0f, cents)));
+    // Quadratic, so the stored value is the square root of the percentage --
+    // and the percentage is not cents. Measured through the plug-in: two voices
+    // written at 8% render 30.5 cents apart and at 12% render 48.1, so the
+    // control spans four cents per percent and 400 cents at the top of its
+    // range. Read as cents it detuned everything four times too far, which at
+    // the fitter's usual values is the difference between a beat and a chord.
+    constexpr float kCentsPerPercent = 4.0f;
+    return juce::jlimit (0.0f, 10.0f,
+                         std::sqrt (juce::jmax (0.0f, cents / kCentsPerPercent)));
 }
 
 float VitalExport::Mapping::resonanceToNormalised (float q) noexcept
@@ -398,8 +412,8 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
 
         settings->setProperty ("osc_" + n + "_on", on ? 1.0f : 0.0f);
 
-        // Vital randomises each note's starting phase by default; this engine
-        // starts every oscillator at zero, so switching it off is the faithful
+        // Vital randomises each note's starting phase by default. The patch
+        // model has no such thing, so switching it off is the faithful
         // translation rather than a preference.
         //
         // It also decides whether the preset can be *fitted* at all. Rendering
@@ -414,18 +428,18 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         //
         // env_1 is the voice's amplitude and applies to everything; this is the
         // per-oscillator envelope on top of it, and Vital has six of them
-        // against this engine's need for three, so each gets its own. The level
+        // against a need for three, so each gets its own. The level
         // itself drops to zero and the envelope's *amount* carries it, because
         // an envelope that scales an oscillator has to be able to silence it --
         // modulation adds to the parameter rather than multiplying it.
         //
         // The shape is not identical. Vital's level control is quadratic, so an
         // envelope driving it produces an amplitude following the square of the
-        // curve where this engine follows the curve. That matters less than it
-        // sounds: what the export owes the fitter is that the parameter *has an
-        // effect*, so the optimiser can use it. Exact shape parity is this
-        // engine's problem, and refinement rendering through Vital absorbs the
-        // difference by adjusting the times and powers.
+        // curve where the fitted envelope is the curve. That matters less than
+        // it sounds: what the export owes the fitter is that the parameter *has
+        // an effect*, so the optimiser can use it, and refinement rendering
+        // through Vital absorbs the difference by adjusting the times and
+        // powers.
         const auto oscEnvIndex = kFirstOscEnvelope + i;
         const auto usesOwnEnvelope = on && osc.envEnabled;
         settings->setProperty ("osc_" + n + "_level",
@@ -460,6 +474,16 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     for (int i = 0; i < kNumLfo; ++i)
     {
         const auto& lfo = patch.lfos[static_cast<size_t> (i)];
+
+        // An LFO with no depth is not part of the patch, so its rate is not
+        // written. It reads as harmless -- nothing is routed from it -- but
+        // Vital runs every LFO whether or not anything listens, and two patches
+        // differing only in the rate of a silent one render about a
+        // ten-thousandth apart. Inaudible, and still a difference nobody asked
+        // for; leaving the slot at Vital's default keeps it at nothing.
+        if (lfo.dest == LfoDest::none || lfo.depth <= 1.0e-4f)
+            continue;
+
         const auto n = juce::String (i + 1);
         settings->setProperty ("lfo_" + n + "_sync", 0.0f);   // free-running, so the rate is in Hz
         settings->setProperty ("lfo_" + n + "_frequency", Mapping::hzToLfoRate (lfo.rateHz));
@@ -606,7 +630,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     // The noise bed, as the sampler.
     //
     // Routed to filter 1 rather than left on Vital's default of the effects
-    // bus: this engine adds noise into the mix *before* the filter, so an
+    // bus: the patch model puts noise into the mix *before* the filter, so an
     // unfiltered noise bed is a different sound -- brighter, and unaffected by
     // the filter envelope that shapes everything else.
     // The room.
@@ -680,7 +704,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     // much of the dry Vital keeps. At these mix levels the crossfade takes
     // well under a decibel, and compensating for it was measured to overshoot:
     // Vital's dry falls far more slowly than `1 - wet`, so undoing that much
-    // put the whole patch several decibels over this engine.
+    // put the whole patch several decibels over the level it was fitted at.
     settings->setProperty ("volume",
                            Mapping::gainToVolume (patch.masterLevel / (levelScale * levelScale)));
 

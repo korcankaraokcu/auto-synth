@@ -3,8 +3,8 @@
 //
 // This is the ground-truth harness the project has always leaned on, and it
 // has one structural blind spot worth stating plainly: it only ever tests
-// sounds this engine can already make, so it can measure precision but never
-// the modelling gap. A real sample tells you *that* something is wrong; this
+// sounds the parameterisation can already make, so it can measure precision but
+// never the modelling gap. A real sample tells you *that* something is wrong; this
 // tells you *why*.
 
 #include "Helpers.h"
@@ -40,6 +40,7 @@ Patch fitOf (const std::vector<float>& x)
 {
     PartialFit::Options options;
     options.hop = kHop;
+    options.renderer = renderer();
     return PartialFit::fit (x.data(), (int) x.size(), kSampleRate, options);
 }
 
@@ -312,7 +313,6 @@ TEST_CASE ("reverb round-trips through detection", "[fit]")
         auto patch = simplePatch (Waveform::saw);
         patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.05f, 0.0f };
         patch.reverb = { true, size, 0.0f, 0.6f };
-        patch.oscs[0].reverbSend = 1.0f;
 
         const auto x = render (patch, 220.0, 3.0, 1.2);
         const auto estimate = EffectsFit::detectReverb (x.data(), (int) x.size(),
@@ -349,7 +349,6 @@ TEST_CASE ("a bigger room gives a longer tail", "[fit]")
         auto patch = simplePatch (Waveform::saw);
         patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.05f, 0.0f };
         patch.reverb = { true, size, 0.0f, 0.6f };
-        patch.oscs[0].reverbSend = 1.0f;
         const auto x = render (patch, 220.0, 3.0, 1.2);
         return EffectsFit::detectReverb (x.data(), (int) x.size(), kSampleRate, 1.2, kHop).rt60;
     };
@@ -376,12 +375,12 @@ TEST_CASE ("fitting a reverbed note keeps the release off the tail", "[fit]")
     auto patch = simplePatch (Waveform::saw);
     patch.ampEnv = { 0.005f, 0.05f, 0.8f, 0.08f, 0.0f };
     patch.reverb = { true, 0.7f, 0.2f, 0.5f };
-    patch.oscs[0].reverbSend = 1.0f;
 
     const auto target = render (patch, 220.0, 3.0, 1.2);
 
     PartialFit::Options options;
     options.hop = kHop;
+    options.renderer = renderer();
     const auto fitted = PartialFit::fit (target.data(), (int) target.size(), kSampleRate, options);
 
     INFO ("reverb " << fitted.reverb.enabled << " size " << fitted.reverb.size
@@ -493,6 +492,7 @@ TEST_CASE ("refinement improves the objective and never regresses", "[fit]")
     const auto fitted = fitOf (target);
     Refine::Options options;
     options.maxEvaluations = 96;
+    options.renderer = renderer();
     const auto result = Refine::run (fitted, target.data(), (int) target.size(),
                                      kSampleRate, options);
 
@@ -500,6 +500,39 @@ TEST_CASE ("refinement improves the objective and never regresses", "[fit]")
     // The best candidate is kept explicitly, so a worse result is not merely
     // unlikely -- it is a bug.
     CHECK (result.finalLoss <= result.initialLoss + 1.0e-9);
+}
+
+TEST_CASE ("a fit without a renderer is visibly unfinished", "[fit]")
+{
+    // The guard for a closed loop silently becoming no loop.
+    //
+    // Level calibration and noise calibration both render, so both do nothing
+    // without a synth to render through. A caller that forgets to pass one gets
+    // a patch back that looks like a fit the whole way -- oscillators, envelope,
+    // filter, all populated -- and is wrong in exactly the two places nothing
+    // else checks. `autosynth_vital --fit` forgot, and shipped a clarinet four
+    // decibels quiet with its noise bed at zero.
+    //
+    // So the two states have to be distinguishable, and this says how: no
+    // renderer, no noise.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.005f, 0.01f, 1.0f, 0.01f, 0.0f };
+    patch.noiseLevel = 0.3f;
+    const auto target = render (patch, 220.0, 2.0, 2.0);
+
+    PartialFit::Options bare;
+    bare.hop = kHop;
+    const auto unfinished = PartialFit::fit (target.data(), (int) target.size(),
+                                             kSampleRate, bare);
+    CHECK (unfinished.noiseLevel == 0.0f);
+
+    PartialFit::Options full;
+    full.hop = kHop;
+    full.renderer = renderer();
+    const auto fitted = PartialFit::fit (target.data(), (int) target.size(),
+                                         kSampleRate, full);
+    INFO ("noise " << fitted.noiseLevel);
+    CHECK (fitted.noiseLevel > 0.0f);
 }
 
 TEST_CASE ("refinement finds note-off for itself", "[fit]")
@@ -514,6 +547,15 @@ TEST_CASE ("refinement finds note-off for itself", "[fit]")
     //
     // The harness never caught it because it is the one caller that passed the
     // gate explicitly.
+    //
+    // Stated as the decision rather than as its consequence. The first version
+    // compared the render from a detected gate against the render from a
+    // held-open one and required the first to be closer. That held while the
+    // renderer was ours and does not hold through Vital: given ninety-six
+    // evaluations its envelope fakes the decay well enough that the two land
+    // within half a decibel of each other, either way round from run to run.
+    // What that measures is how much optimiser budget a mistake can be papered
+    // over with, not whether the mistake was made.
     auto patch = simplePatch (Waveform::saw);
     patch.ampEnv = { 0.01f, 0.1f, 0.7f, 0.15f, 0.0f };
     // A note that stops early and leaves a long quiet tail -- the shape of any
@@ -521,36 +563,19 @@ TEST_CASE ("refinement finds note-off for itself", "[fit]")
     // merely inaccurate.
     const auto target = render (patch, 220.0, 3.0, 0.6);
 
-    const auto fitted = fitOf (target);
+    Refine::Options options;
+    options.maxEvaluations = 8;   // the gate is decided before the search runs
+    options.renderer = renderer();
+    const auto result = Refine::run (fitOf (target), target.data(), (int) target.size(),
+                                     kSampleRate, options);
 
-    Refine::Options automatic;
-    automatic.maxEvaluations = 96;
-    const auto autoResult = Refine::run (fitted, target.data(), (int) target.size(),
-                                         kSampleRate, automatic);
+    INFO ("detected gate " << result.gateSeconds << " s, true 0.6");
+    CHECK (result.gateSeconds == Catch::Approx (0.6).margin (0.1));
 
-    // The old behaviour, stated explicitly: hold the note for the whole file.
-    Refine::Options held;
-    held.maxEvaluations = 96;
-    held.gateSeconds = 3.0; // == duration
-    const auto heldResult = Refine::run (fitted, target.data(), (int) target.size(),
-                                         kSampleRate, held);
-
-    // Judged on the rendered result, not on refinement's internal loss.
-    //
-    // The loss is the thing being questioned here, so it cannot also be the
-    // judge: holding the note open scores *better* on it while sounding worse,
-    // which is precisely the failure this test exists to catch. What matters is
-    // how close the refined patch renders to the target.
-    const auto distanceTo = [&target] (const Patch& p)
-    {
-        const auto rendered = render (p, 220.0, 3.0, 0.6);
-        return loudnessDistanceDb (rendered, target);
-    };
-
-    const auto autoDistance = distanceTo (autoResult.patch);
-    const auto heldDistance = distanceTo (heldResult.patch);
-    INFO ("detected " << autoDistance << " dB   held-open " << heldDistance << " dB");
-    CHECK (autoDistance < heldDistance);
+    // And a caller that says where the note ends is believed.
+    options.gateSeconds = 3.0;
+    CHECK (Refine::run (fitOf (target), target.data(), (int) target.size(),
+                        kSampleRate, options).gateSeconds == Catch::Approx (3.0));
 }
 
 TEST_CASE ("refinement does not quietly turn the patch down", "[fit]")
@@ -568,6 +593,7 @@ TEST_CASE ("refinement does not quietly turn the patch down", "[fit]")
     const auto fitted = fitOf (target);
     Refine::Options options;
     options.maxEvaluations = 96;
+    options.renderer = renderer();
     const auto refined = Refine::run (fitted, target.data(), (int) target.size(),
                                       kSampleRate, options);
 
@@ -595,6 +621,7 @@ TEST_CASE ("refinement never invents oscillators", "[fit]")
     const auto fitted = fitOf (target);
     Refine::Options options;
     options.maxEvaluations = 96;
+    options.renderer = renderer();
     const auto result = Refine::run (fitted, target.data(), (int) target.size(),
                                      kSampleRate, options);
 

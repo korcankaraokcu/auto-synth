@@ -3,27 +3,21 @@
     Configure and build auto-synth on Windows.
 
 .DESCRIPTION
-    Checks the toolchain, configures CMake, builds the plugin and the test
-    suite, and optionally installs the VST3 to the per-user folder.
+    Checks the toolchain, configures CMake, and builds the tools and the test
+    suite.
 
-    This exists because the interesting failures in this build are not build
-    errors. JUCE's plugin copy step needs administrator rights and fails at the
-    very last step of an otherwise successful build, which reads like a
-    compilation failure. A missing C compiler makes JUCE refuse to configure
-    with a message that does not mention C. Neither is obvious the first time.
+    This exists because the interesting failure in this build is not a build
+    error: a missing C compiler makes JUCE refuse to configure with a message
+    that does not mention C, which is not obvious the first time.
 
 .PARAMETER Config
     Build configuration. Release by default; the test suite is slow in Debug.
 
-.PARAMETER Install
-    Also copy the built VST3 into the per-user VST3 folder.
-
 .PARAMETER SkipTests
-    Configure and build the plugin only.
+    Configure and build the tools only.
 
 .EXAMPLE
     .\scripts\bootstrap.ps1
-    .\scripts\bootstrap.ps1 -Install
     .\scripts\bootstrap.ps1 -Config Debug -SkipTests
 #>
 
@@ -31,7 +25,6 @@
 param(
     [ValidateSet('Release', 'RelWithDebInfo', 'Debug')]
     [string]$Config = 'Release',
-    [switch]$Install,
     [switch]$SkipTests
 )
 
@@ -95,7 +88,7 @@ if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 
 # --- build ----------------------------------------------------------------
 
-$targets = @('AutoSynth_VST3', 'AutoSynth_Standalone', 'autosynth_render', 'autosynth_probe')
+$targets = @('autosynth_probe', 'autosynth_diff', 'autosynth_vital')
 if (-not $SkipTests) {
     $targets += 'autosynth_tests'
 }
@@ -112,22 +105,12 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }
 }
 
-# --- install --------------------------------------------------------------
-
-if ($Install) {
-    Write-Step 'Installing the VST3'
-    # Deliberately the per-user folder: JUCE's own copy step targets
-    # C:\Program Files\Common Files\VST3, which needs elevation.
-    & cmake --build $buildDir --config $Config --target install_plugin
-    if ($LASTEXITCODE -ne 0) { throw "install failed ($LASTEXITCODE)" }
-}
-
 # --- summary --------------------------------------------------------------
 
-$artefacts = Join-Path $buildDir "AutoSynth_artefacts\$Config"
 Write-Step 'Done'
-Write-Host "    Standalone : $(Join-Path $artefacts 'Standalone\auto-synth.exe')"
-Write-Host "    VST3       : $(Join-Path $artefacts 'VST3\auto-synth.vst3')"
-if (-not $Install) {
-    Write-Host '    Run with -Install to copy the VST3 into your per-user VST3 folder.'
+foreach ($tool in $targets) {
+    if ($tool -eq 'autosynth_tests') { continue }
+    Write-Host "    $tool : $(Join-Path $buildDir "${tool}_artefacts\$Config\$tool.exe")"
 }
+Write-Host ''
+Write-Host '    Vital must be installed: it is the synth, and the test suite renders through it.'

@@ -284,15 +284,14 @@ TEST_CASE ("measured mappings, not assumed ones", "[vital]")
 
     // Volume is a square-root control reading sqrt(stored) - 80 decibels, so
     // unity gain is 6400 and silence is 0.
-    // Unity plus the export makeup, which is Vital's own -6 dB headroom read
-    // the other way: a peak-normalised patch lands on their default, not under
-    // it.
-    CHECK (M::gainToVolume (1.0f) == Catch::Approx (7396.0f).margin (2.0));
+    //
+    // Unity amplitude lands 6 dB under that, at 5476, because Vital's summed
+    // oscillators arrive at the control at twice their stated amplitude. Which
+    // is also Vital's own default volume of 5473.04, to within the rounding --
+    // the default is exactly -6 dB, and it is there for the same reason.
+    CHECK (M::gainToVolume (1.0f) == Catch::Approx (5476.0f).margin (2.0));
     CHECK (M::gainToVolume (0.0f) == Catch::Approx (0.0f).margin (0.001));
-    // Half amplitude comes out at 5472.95, and Vital's own default volume is
-    // 5473.04 -- the default is exactly -6 dB, which is the mapping confirming
-    // itself from a direction the derivation never used.
-    CHECK (M::gainToVolume (0.5f) == Catch::Approx (6397.0f).margin (2.0));
+    CHECK (M::gainToVolume (0.5f) == Catch::Approx (4621.0f).margin (2.0));
 
     // Oscillator level is quadratic, so the stored value is the square root of
     // the amplitude. Vital's own default of 0.70710678 renders as a half.
@@ -313,7 +312,7 @@ TEST_CASE ("gain lands on the master, not folded into the oscillators", "[vital]
 
     const auto settings = settingsOf (patch);
     CHECK ((float) settings.getProperty ("osc_1_level", 0.0) == Catch::Approx (1.0f).margin (0.001));
-    CHECK ((float) settings.getProperty ("volume", 0.0) == Catch::Approx (7396.0f).margin (2.0));
+    CHECK ((float) settings.getProperty ("volume", 0.0) == Catch::Approx (5476.0f).margin (2.0));
 
     patch.masterLevel = 0.5f;
     CHECK ((float) settingsOf (patch).getProperty ("volume", 0.0)
@@ -521,9 +520,9 @@ TEST_CASE ("the mappings invert Vital's declared curves", "[vital]")
         CHECK (readBack ("frequency", M::hzToLfoRate (hz)) == Catch::Approx (hz).margin (0.01));
 
     // And the master gain reads back as the decibels it was asked for, which is
-    // where the -6 dB export makeup shows up honestly rather than as a fudge.
+    // where the trim shows up honestly rather than as a fudge.
     const auto db = readBack ("volume", M::gainToVolume (1.0f));
-    CHECK (db == Catch::Approx (M::kExportMakeupDb).margin (0.05));
+    CHECK (db == Catch::Approx (M::kMasterTrimDb).margin (0.05));
 }
 
 TEST_CASE ("every parameter the fitter can search reaches the preset", "[vital]")
@@ -568,12 +567,7 @@ TEST_CASE ("every parameter the fitter can search reaches the preset", "[vital]"
         osc.pulseWidth = 0.35f;
         osc.numFrames = 3;
         osc.framePositionEnvAmount = 0.5f;
-        osc.reverbSend = 0.3f;
         osc.envEnabled = true;
-        osc.filterEnabled = true;
-        osc.filter.type = autosynth::FilterType::lowpass;
-        osc.filter.cutoffHz = 2000.0f + 500.0f * i;
-        osc.filter.envAmount = 0.8f;
     }
 
     patch.lfos[0].dest = autosynth::LfoDest::pitch;

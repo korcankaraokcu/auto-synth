@@ -16,7 +16,6 @@
 #include "fit/FilterFit.h"
 #include "fit/Modulation.h"
 #include "fit/PartialFit.h"
-#include "fit/Refine.h"
 #include "fit/WaveformFit.h"
 #include "analysis/Partials.h"
 #include "analysis/Roles.h"
@@ -95,7 +94,7 @@ int main (int argc, char* argv[])
     if (args.positional.isEmpty())
     {
         std::fprintf (stderr, "usage: autosynth_probe <input.wav> [--hop n] [--fft n] "
-                              "[--refine 1] [--patch out.json] [--vital out.vital]\n");
+                              "[--patch out.json] [--vital out.vital]\n");
         return 2;
     }
 
@@ -284,26 +283,16 @@ int main (int argc, char* argv[])
     fitOptions.hop = hop;
     const auto fitted = autosynth::PartialFit::fit (samples, numSamples, sampleRate, fitOptions);
 
-    // Refinement, only when asked: it costs ~8s per second of audio.
-    juce::var refineVar;
-    auto finalPatch = fitted;
-    if (args.value ("--refine", 0.0) > 0.0)
-    {
-        autosynth::Refine::Options refineOptions;
-        refineOptions.maxEvaluations = static_cast<int> (args.value ("--refine-evals", 192.0));
-        const auto refined = autosynth::Refine::run (fitted, samples, numSamples,
-                                                     sampleRate, refineOptions);
-        auto* obj = new juce::DynamicObject();
-        obj->setProperty ("initial_loss", refined.initialLoss);
-        obj->setProperty ("final_loss", refined.finalLoss);
-        obj->setProperty ("evaluations", refined.evaluations);
-        obj->setProperty ("improved", refined.improved);
-        obj->setProperty ("cutoff_hz", refined.patch.filter.cutoffHz);
-        obj->setProperty ("master_level", refined.patch.masterLevel);
-        obj->setProperty ("active_oscs", refined.patch.activeOscCount());
-        refineVar = juce::var (obj);
-        finalPatch = refined.patch;
-    }
+    // No renderer here, and so no refinement and no level calibration: both are
+    // closed loops around a synth, and the synth is Vital, which
+    // `autosynth_vital --fit` hosts and this does not. This stays what it has
+    // always been -- the deterministic half, which is what the golden fixtures
+    // pin and what a stage-by-stage comparison needs.
+    //
+    // The patch written below is therefore an *analysis* result, not a finished
+    // fit: oscillator levels are whatever the factorisation left and the noise
+    // bed is zero. For a preset to listen to, use `autosynth_vital --fit`.
+    const auto finalPatch = fitted;
 
     // Write the fitted patch out, so a real sample can be taken end to end from
     // the command line: probe it, render the patch, compare the two files. The
@@ -320,8 +309,8 @@ int main (int argc, char* argv[])
     }
 
     // ...and the same patch as a Vital preset, which is the whole argument for
-    // the IR being the deliverable: sample in, someone else's synth out,
-    // without this engine in between.
+    // the IR: sample in, someone else's synth out, with nothing of ours in
+    // between but a description.
     if (const auto it = args.options.find ("--vital"); it != args.options.end()
         && it->second.isNotEmpty())
     {
@@ -378,7 +367,6 @@ int main (int argc, char* argv[])
     auto* root = new juce::DynamicObject();
     root->setProperty ("roles", rolesVar);
     root->setProperty ("fitted", juce::var (fittedObj));
-    root->setProperty ("refine", refineVar);
     root->setProperty ("filter_fit", filterVar);
     root->setProperty ("lfo", juce::var (lfoObj));
     root->setProperty ("lfos", lfoList);

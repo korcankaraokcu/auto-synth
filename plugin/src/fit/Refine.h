@@ -49,6 +49,12 @@ public:
         double finalLoss = 0.0;
         int evaluations = 0;
         bool improved = false;
+
+        // Where the note was taken to end, whether the caller said so or this
+        // worked it out. Reported because it is a decision, not a detail: every
+        // candidate is rendered against it, and getting it wrong is the
+        // difference between fitting a note and fitting a note plus silence.
+        double gateSeconds = 0.0;
     };
 
     static Result run (const Patch& patch, const float* target, int numSamples,

@@ -1,8 +1,6 @@
 #include "fit/EnvelopeFit.h"
 
 #include "dsp/Envelope.h"
-
-#include "dsp/Envelope.h"
 #include "fit/NdFilters.h"
 
 #include <algorithm>

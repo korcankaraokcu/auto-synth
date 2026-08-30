@@ -1,5 +1,5 @@
-// The IR is the contract: analysis produces one, the engine renders one,
-// exporters translate one. If it does not survive a round trip through JSON
+// The IR is the contract: analysis produces one, the exporter translates one,
+// Vital plays one. If it does not survive a round trip through JSON
 // then nothing built on it can be trusted, so this is checked first.
 
 #include "Helpers.h"
@@ -43,10 +43,6 @@ TEST_CASE ("a patch round-trips through JSON", "[ir]")
     patch.oscs[0].unisonDetune = 22.0f;
     patch.oscs[0].waveformB = Waveform::triangle;
     patch.oscs[0].waveMorph = 0.35f;
-    patch.oscs[0].reverbSend = 0.6f;
-    patch.oscs[0].filterEnabled = true;
-    patch.oscs[0].filter.type = FilterType::bandpass;
-    patch.oscs[0].filter.cutoffHz = 900.0f;
     patch.ampEnv = { 0.02f, 0.3f, 0.4f, 0.15f, 0.8f };
     patch.filter.type = FilterType::highpass;
     patch.filter.cutoffHz = 1234.0f;
@@ -75,10 +71,6 @@ TEST_CASE ("a patch round-trips through JSON", "[ir]")
     CHECK (back.oscs[0].unisonVoices == patch.oscs[0].unisonVoices);
     CHECK (back.oscs[0].waveformB == patch.oscs[0].waveformB);
     CHECK (back.oscs[0].waveMorph == Catch::Approx (patch.oscs[0].waveMorph));
-    CHECK (back.oscs[0].reverbSend == Catch::Approx (patch.oscs[0].reverbSend));
-    CHECK (back.oscs[0].filterEnabled == patch.oscs[0].filterEnabled);
-    CHECK (back.oscs[0].filter.type == patch.oscs[0].filter.type);
-    CHECK (back.oscs[0].filter.cutoffHz == Catch::Approx (patch.oscs[0].filter.cutoffHz));
 
     CHECK (back.ampEnv.curve == Catch::Approx (patch.ampEnv.curve));
     CHECK (back.filter.type == patch.filter.type);
@@ -111,7 +103,6 @@ TEST_CASE ("a round-tripped patch renders identically", "[ir]")
     // reads but the comparison above forgot to check.
     auto patch = simplePatch (Waveform::saw);
     patch.reverb = { true, 0.7f, 0.4f, 0.8f };
-    patch.oscs[0].reverbSend = 0.9f;
     patch.delay = { true, 0.2f, 0.4f, 0.5f };
     patch.lfos[0] = { LfoShape::sine, LfoDest::pitch, 5.0f, 0.3f, 0.0f, 0.0f };
 
@@ -126,7 +117,7 @@ TEST_CASE ("a round-tripped patch renders identically", "[ir]")
     double worst = 0.0;
     for (size_t i = 0; i < a.size(); ++i)
         worst = juce::jmax (worst, (double) std::abs (a[i] - b[i]));
-    CHECK (worst < 1.0e-6);
+    CHECK (worst < kRenderFloor);
 }
 
 TEST_CASE ("enum names survive as strings, not indices", "[ir]")

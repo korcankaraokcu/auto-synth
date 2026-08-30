@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <juce_core/juce_core.h>
 
 namespace autosynth
@@ -144,18 +145,8 @@ struct Oscillator
     float framePositionEnvAmount = 0.0f;
     Adsr framePositionEnv { 0.05f, 0.4f, 0.6f, 0.2f, 0.0f };
 
-    // How much of this oscillator feeds the shared reverb. Per-oscillator so
-    // one layer can be drenched while another stays dry, which is the whole
-    // reason to want reverb "on an oscillator".
-    float reverbSend = 0.0f;
     bool envEnabled = false;
     Adsr env { 0.005f, 0.3f, 1.0f, 0.1f, 0.0f };
-
-    // Per-oscillator filter, applied before this oscillator is summed into the
-    // mix. Filtering the sum instead would make every oscillator share a tone
-    // again, which defeats the point of having more than one.
-    bool filterEnabled = false;
-    Filter filter {};
 };
 
 struct Lfo
@@ -184,8 +175,6 @@ struct Lfo
     float wanderRateHz = 0.0f;
 };
 
-// Named DelayParams rather than Delay so the struct and the `Delay` DSP class
-// can coexist without qualification at every use site.
 struct DelayParams
 {
     bool enabled = false;
@@ -194,18 +183,14 @@ struct DelayParams
     float mix = 0.0f;
 };
 
-// One shared reverb, fed by per-oscillator sends.
+// One reverb for the patch.
 //
-// So an oscillator controls *how much* reverb it gets, but not what kind: the
-// size, damping and return are common to all three. Three instances would put
-// each oscillator in a different room, which is unusual for one instrument --
-// a real source sits in one space, and layers of a patch normally read as one
-// sound rather than three.
+// Three would put each oscillator in a different room, which is unusual for one
+// instrument -- a real source sits in one space, and layers of a patch normally
+// read as one sound rather than three. Vital has one too, which settles it.
 //
-// The cost argument is weaker than it looks and is not the reason: the reverb
-// lives on the Engine, not the Voice, so three of them would be three
-// instances in total rather than three per voice. Polyphony does not multiply
-// it.
+// `level` is a return gain rather than a dry/wet balance. Vital's control is a
+// crossfade, so `VitalExport` converts between them by a measured ratio.
 struct ReverbParams
 {
     bool enabled = false;
@@ -213,6 +198,20 @@ struct ReverbParams
     float damp = 0.5f;
     float level = 0.0f;  // return gain, not a dry/wet balance
 };
+
+// How a patch becomes audio.
+//
+// There is no synth in this repository any more: the deliverable is a Vital
+// preset, so the thing that says what a patch sounds like is Vital, and the
+// caller that owns a plug-in host owns the renderer. Analysis, refinement and
+// the recovery harness all take one of these rather than each reaching for an
+// engine of their own -- which is also what stops any of them optimising
+// against a sound the preset will not make.
+//
+// Returns mono samples at the caller's own rate.
+using Renderer = std::function<std::vector<float> (const struct Patch& patch,
+                                                   double durationSeconds,
+                                                   double gateSeconds)>;
 
 struct Patch
 {

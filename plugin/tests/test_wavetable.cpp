@@ -86,18 +86,24 @@ TEST_CASE ("a frame holding a saw's harmonics sounds like a saw", "[wavetable]")
 {
     const std::vector<Harmonics> frames { frameFor (Waveform::saw) };
 
-    // Played high enough that Nyquist, not the frame length, is what limits
-    // the harmonics: in this octave both tables are cut to nine, so they are
-    // the same signal rather than merely a similar one. Lower down the fixed
-    // saw carries seventy-five harmonics and the frame sixteen, and the frame
-    // is legitimately duller -- comparing them there would only measure that a
+    // Played high enough that Nyquist, not the frame length, is what limits the
+    // harmonics: in this octave both are cut to sixteen, so they are the same
+    // shape rather than merely a similar one. Lower down the generated saw
+    // carries seventy-five harmonics and the frame sixteen, and the frame is
+    // legitimately duller -- comparing them there would only measure that a
     // frame holds sixteen numbers, which is a design choice, not a bug.
     constexpr auto highNoteHz = 1500.0;
     const auto table = render (tablePatch (frames, 0.0f), highNoteHz);
     const auto classic = render (simplePatch (Waveform::saw), highNoteHz);
 
     CHECK (centroidDistanceOctaves (table, classic) < 0.02);
-    CHECK (loudnessDistanceDb (table, classic) < 0.5);
+
+    // The same shape, not the same level. Every frame is peak-normalised on the
+    // way into the preset and a saw's peak grows with the harmonics written
+    // into it, so the drawn frame arrives about a decibel hotter than the
+    // generated one even where both are then band limited to sixteen. That is
+    // the normalisation showing, not the shape disagreeing.
+    CHECK (loudnessDistanceDb (table, classic) < 1.5);
 }
 
 TEST_CASE ("frame position crossfades between frames", "[wavetable]")
@@ -253,31 +259,6 @@ TEST_CASE ("a quiet layer is not given a table", "[wavetable]")
                                     frameTimes (numFrames), 10.0f, false, blend, 0.05).useCustomFrames);
 }
 
-TEST_CASE ("frame tables rebuild only when the frames change", "[wavetable]")
-{
-    Frames frames {};
-    for (size_t f = 0; f < 3; ++f)
-    {
-        frames[f].custom = true;
-        frames[f].harmonics = frameFor (Waveform::saw);
-    }
-
-    WaveTables::FrameTables tables;
-    CHECK_FALSE (tables.matches (frames, 3, kSampleRate));
-
-    tables.build (frames, 3, kSampleRate);
-    CHECK (tables.matches (frames, 3, kSampleRate));
-    CHECK (tables.tableFor (0, 220.0) != nullptr);
-
-    // A different sample rate is a different band limit, so the cached tables
-    // are not reusable however identical the frames are.
-    CHECK_FALSE (tables.matches (frames, 3, kSampleRate * 2.0));
-    CHECK_FALSE (tables.matches (frames, 2, kSampleRate));
-
-    frames[1].harmonics[3] += 0.1f;
-    CHECK_FALSE (tables.matches (frames, 3, kSampleRate));
-}
-
 TEST_CASE ("an undrawn frame is the waveform itself, at full bandwidth", "[wavetable]")
 {
     // The whole reason a frame stays generated until it is touched: a saw is a
@@ -285,6 +266,11 @@ TEST_CASE ("an undrawn frame is the waveform itself, at full bandwidth", "[wavet
     // harmonics against sixteen, and the difference is plainly audible -- so
     // this compares a default oscillator, whose single frame nobody has drawn
     // on, against the same frame written out as sixteen numbers.
+    //
+    // It is a test of the exporter as much as of the format. The first version
+    // wrote every frame as sixteen harmonics, generated ones included, and the
+    // two renders below came back identical to the last decimal -- the whole
+    // band above the sixteenth harmonic thrown away with nothing to say so.
     auto patch = simplePatch (Waveform::saw);
     CHECK (patch.oscs[0].numFrames == 1);
     CHECK_FALSE (patch.oscs[0].frames[0].custom);
@@ -299,28 +285,3 @@ TEST_CASE ("an undrawn frame is the waveform itself, at full bandwidth", "[wavet
     CHECK (meanCentroidHz (plain) > meanCentroidHz (sixteen) * 2.0);
 }
 
-// Tagged out of the default run: a timing measurement is not a correctness
-// test, and it would be flaky on a loaded machine. Kept because the number is
-// what the staging in `Engine::buildFrameTables` exists for, and a change that
-// made it ten times worse should be visible to whoever looks.
-TEST_CASE ("a frame set rebuild stays in the low milliseconds", "[wavetable][.bench]")
-{
-    Frames frames {};
-    for (size_t f = 0; f < 3; ++f)
-    {
-        frames[f].custom = true;
-        frames[f].harmonics = frameFor (Waveform::saw);
-    }
-
-    const auto start = juce::Time::getHighResolutionTicks();
-    for (int i = 0; i < 20; ++i)
-    {
-        WaveTables::FrameTables tables;
-        frames[1].harmonics[2] = 0.1f * static_cast<float> (i);
-        tables.build (frames, 3, kSampleRate);
-    }
-    const auto ms = juce::Time::highResolutionTicksToSeconds (
-                        juce::Time::getHighResolutionTicks() - start) * 1000.0 / 20.0;
-    WARN ("frame set rebuild: " << ms << " ms");
-    CHECK (ms < 20.0);
-}
