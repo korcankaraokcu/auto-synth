@@ -300,6 +300,28 @@ TEST_CASE ("measured mappings, not assumed ones", "[vital]")
     CHECK (M::levelToOscLevel (0.25f) == Catch::Approx (0.5f).margin (0.001));
 }
 
+TEST_CASE ("the master ceiling is the one the preset can carry", "[vital]")
+{
+    // A patch is allowed a gain above one because the chain below it
+    // attenuates, and the ceiling on that gain is not a taste: it is the last
+    // value Vital's volume control can hold. The control tops out at +6 dB and
+    // the export sits 6 dB under it, so four is exactly the end of the range and
+    // anything past it is a number the preset rounds down without saying so.
+    //
+    // Pinned here rather than left as a constant agreeing with itself, so that
+    // raising one without the other is a failure rather than a silent clamp.
+    using M = VitalExport::Mapping;
+    CHECK (M::gainToVolume (autosynth::kMaxMasterLevel)
+               == Catch::Approx (7399.44f).margin (2.0));
+    CHECK (M::gainToVolume (autosynth::kMaxMasterLevel * 1.5f)
+               == Catch::Approx (7399.44f).margin (2.0));   // clamped, as documented
+
+    // And one is not the ceiling, which is the thing that was wrong: a violin
+    // needing 1.24 came out seven decibels quiet against a clamp at one.
+    CHECK (M::gainToVolume (1.0f) < 7399.44f - 2.0f);
+    CHECK (M::gainToVolume (1.24f) > M::gainToVolume (1.0f));
+}
+
 TEST_CASE ("gain lands on the master, not folded into the oscillators", "[vital]")
 {
     // An earlier version multiplied the two together and wrote the result

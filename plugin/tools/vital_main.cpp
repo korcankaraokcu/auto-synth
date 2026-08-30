@@ -179,7 +179,7 @@ int main (int argc, char* argv[])
                       "[--note hz] [--dur s] [--gate s] [--sr rate] "
                       "[--plugin Vital.vst3] [--preset out.vital]\n"
                       "       autosynth_vital <patch-out.json> <out.wav> "
-                      "--fit <target.wav> [--refine-evals n]\n"
+                      "--fit <target.wav> [--refine-evals n] [--seed n]\n"
                       "       autosynth_vital --eval [--trials n] [--seed n]\n"
                       "       autosynth_vital <patch.json> <out.wav> --sweep\n"
                       "       autosynth_vital <patch.json> <out.wav> --check-repeatable\n");
@@ -442,6 +442,12 @@ int main (int argc, char* argv[])
         refineOptions.maxEvaluations = (int) args.value ("--refine-evals", 192.0);
         refineOptions.gateSeconds = gate;
         refineOptions.renderer = renderer;
+
+        // Exposed because one fit is one sample of a search, not the answer.
+        // The objective has seven terms and CMA-ES settles on a different trade
+        // between them from a different draw, so a change that moves one axis
+        // has to be read against the spread rather than against one run.
+        refineOptions.seed = (unsigned) args.value ("--seed", 1.0);
 
         const auto started = juce::Time::getMillisecondCounterHiRes();
         const auto refined = autosynth::Refine::run (patch, target.data(), (int) target.size(),

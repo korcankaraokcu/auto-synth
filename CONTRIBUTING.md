@@ -208,7 +208,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-115 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+117 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
 `[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
@@ -2389,6 +2389,59 @@ site.
 
 The pattern is the same one this file keeps recording. A measurement taken
 against the wrong thing does not read as wrong — it reads as fine.
+
+### Two ways to be quiet, and only one of them was the export
+
+Reported by ear — "the clarinet is a bit different, and quieter" — against a
+diagnostic that said the level was fine. Three separate faults, found in that
+order, each hiding the next.
+
+**The fit was not being calibrated at all.** Covered above: the tool passed a
+renderer to refinement and not to analysis, so the level solve and the noise
+solve both declined silently.
+
+**The master was clamped to one.** With that fixed the violin was still 7.5 dB
+under its source, on every measure — peak, overall RMS, and the sustained body
+alike — while ten of the eleven axes said ok, because ten of the eleven are
+shape-relative. Only `peak level` is absolute, which is exactly why it was
+added.
+
+The level was reachable and nothing would take it. Rendered peak scales linearly
+with the master, at 0.347 per unit for that patch, and the violin peaks at 0.430
+— so it needed 1.24 and the clamp stopped at 1.0. Three clamps enforced it: the
+initial guess, the level solve, and the search range.
+
+One is the wrong ceiling because everything between an oscillator and the output
+attenuates — the amplitude envelope, the filter, and the peak of a filtered wave
+against the peak of the table it came from. The right ceiling is what the
+deliverable carries: Vital's volume control tops out at +6 dB and the export
+sits 6 dB under it, so a linear gain of four is exactly the last value that
+survives the trip, and `kMaxMasterLevel` is four for that reason and no other.
+
+Freed, the violin goes from 7.49 dB quiet to inside tolerance.
+
+**And renders were not repeatable when the note was still held.** Found while
+building a test for the above, which failed in the suite and passed alone.
+
+A render whose gate is its whole duration ends with the note sounding. The
+settle stopped it with an all-sound-off, which silences it and leaves Vital's
+voice allocator one place further on, because the voice never finished — so the
+next note lands on a different voice, and two renders of one patch alternate
+between two states, differing by 0.30 at the sample. Their loudness agrees to
+0.04 dB and their spectra to 0.0015, so every term in the objective is blind to
+it, and a peak is not: the same patch measured 0.585 and 0.335 depending on
+where it fell in the suite, which is 4.8 dB of level attributed to the patch and
+owed to the host.
+
+Every gate short of the buffer was already bit-exact, which is what made it look
+like a property of the patch. All-*notes*-off instead, and let the voice finish
+during the settle: four renders of a repeat then agree bit for bit, held note or
+not.
+
+Worth stating plainly, because it is the third time in this file: **the loss
+could not see any of these.** Two were invisible to all seven terms and the
+third was worth twelve decibels. Every one of them was found by a listener or by
+a test that compared a number against something absolute.
 
 ### Traps found along the way
 

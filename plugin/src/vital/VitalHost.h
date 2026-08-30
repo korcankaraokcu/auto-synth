@@ -216,8 +216,19 @@ public:
     // whole duration -- survives reset() and the next preset load and goes on
     // playing underneath what comes next: unstopped, a suite that renders 55 Hz
     // and then 220 measures 55 both times, the older voice being the lowest
-    // thing in the mix. All sound off rather than all notes off, because the
-    // second only releases the voice, which then decays into the measurement.
+    // thing in the mix.
+    //
+    // It is *released* rather than killed, and that distinction cost an
+    // afternoon. All sound off silences it just as well, and leaves Vital's
+    // voice allocator one place further on, because the voice never finished --
+    // so the next note lands on a different voice with a different phase. Two
+    // renders of one patch then alternate between two states, differing by 0.30
+    // at the sample while their loudness agrees to 0.04 dB and their spectra to
+    // 0.0015: invisible to every term in the objective and plainly visible in a
+    // peak. Every gate short of the buffer was already exact, which is what
+    // made it look like a property of the patch rather than of the host.
+    // Released and allowed to finish, the voice goes back where it came from
+    // and all four renders of a repeat agree bit for bit.
     //
     // Tails outlive the note that fed them, so the run continues until the
     // output goes quiet rather than for a fixed time.
@@ -234,10 +245,7 @@ public:
     {
         juce::MidiBuffer stop;
         for (int channel = 1; channel <= 16; ++channel)
-        {
             stop.addEvent (juce::MidiMessage::allNotesOff (channel), 0);
-            stop.addEvent (juce::MidiMessage::allSoundOff (channel), 0);
-        }
 
         const auto minBlocks = (int) std::ceil (0.3 * sampleRate / blockSize);
         const auto maxBlocks = (int) std::ceil (4.0 * sampleRate / blockSize);

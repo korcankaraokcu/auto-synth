@@ -18,6 +18,8 @@
 #include "fit/Nnls.h"
 #include "fit/PartialFit.h"
 #include "fit/Refine.h"
+
+#include <algorithm>
 #include "fit/WaveformFit.h"
 
 #include <catch2/catch_approx.hpp>
@@ -533,6 +535,44 @@ TEST_CASE ("a fit without a renderer is visibly unfinished", "[fit]")
                                          kSampleRate, full);
     INFO ("noise " << fitted.noiseLevel);
     CHECK (fitted.noiseLevel > 0.0f);
+}
+
+TEST_CASE ("the master is not clamped to one", "[fit]")
+{
+    // Every axis but one in the diagnostic is shape-relative, so a fit that is
+    // uniformly quiet reports as fine on all of them. That is what happened: a
+    // violin needing a master of 1.24 was clamped at 1.0 and came back seven
+    // decibels down with ten axes saying ok. Freed, it lands within two.
+    //
+    // The clamp was wrong because everything between an oscillator and the
+    // output attenuates, so the level a recording was made at is routinely more
+    // than a patch reaches with its master at one. The ceiling is what the
+    // preset can carry, which `the master ceiling is the one the preset can
+    // carry` pins from the export side.
+    //
+    // Asserted where the clamp actually was rather than through a fit. A fitted
+    // master cannot be predicted from the truth's: refinement is free to choose
+    // a structure with different losses below the master, so the value that
+    // reproduces one target legitimately differs between two patches that
+    // sound alike. The violin is the end-to-end evidence and it is in
+    // CONTRIBUTING.md, with numbers.
+    const auto specs = Refine::continuousSpecs();
+    const auto master = std::find_if (specs.begin(), specs.end(),
+                                      [] (const Refine::ParamSpec& s) { return s.path == "master_level"; });
+    REQUIRE (master != specs.end());
+    INFO ("search range " << master->lo << " to " << master->hi);
+    CHECK (master->hi == Catch::Approx (autosynth::kMaxMasterLevel));
+    CHECK (master->hi > 1.0);
+
+    // And analysis is allowed to ask for it, which is the other half: a level
+    // solve that saturates at one hands refinement a starting point it cannot
+    // reason its way out of.
+    auto patch = simplePatch (Waveform::saw);
+    patch.masterLevel = 2.5f;
+    juce::String error;
+    const auto back = Patch::fromJsonString (patch.toJson(), &error);
+    REQUIRE (error.isEmpty());
+    CHECK (back.masterLevel == Catch::Approx (2.5f));
 }
 
 TEST_CASE ("refinement finds note-off for itself", "[fit]")

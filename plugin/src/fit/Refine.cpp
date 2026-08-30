@@ -396,7 +396,7 @@ const std::map<std::string, Spec>& specTable()
         // lowers a log-spectral error, so an unbounded noise level is a free
         // win for the objective and a loss for the ear.
         t["noise_level"] = { "noise_level", 0.0, 0.25, false };
-        t["master_level"] = { "master_level", 0.0, 1.0, false };
+        t["master_level"] = { "master_level", 0.0, kMaxMasterLevel, false };
         return t;
     }();
     return table;

@@ -27,6 +27,9 @@ constexpr int kNumOsc = 3;
 // merit, which is the same rule everything else here follows.
 constexpr int kNumLfo = 2;
 
+// The largest output gain a preset can carry. See `Patch::masterLevel`.
+constexpr float kMaxMasterLevel = 4.0f;
+
 // `noise` is a generator like the rest, not a special case bolted on beside
 // them. Selecting it gives the oscillator's noise everything an oscillator
 // already has -- its own level, envelope, filter and reverb send -- which is
@@ -223,6 +226,20 @@ struct Patch
     ReverbParams reverb {};
     float noiseLevel = 0.0f;
 
+    // Linear output gain, and it is allowed above one.
+    //
+    // Everything between an oscillator and the output attenuates -- the
+    // amplitude envelope, the filter, and the peak of a filtered wave against
+    // the peak of the table it came from -- so the level a recording was made
+    // at is routinely more than the level a patch reaches with this at 1.0. A
+    // violin peaking at 0.43 needs 1.24 here, and clamped at one it came out
+    // seven decibels quiet with every other axis reporting fine, because every
+    // other axis is shape-relative.
+    //
+    // Four is the ceiling because that is what the deliverable carries: Vital's
+    // volume control tops out at +6 dB, and the export sits 6 dB under it, so a
+    // gain of four is exactly the last value that survives the trip. Asking for
+    // more would be a number the preset silently rounds down.
     float masterLevel = 0.8f;
     // Playback metadata, not a synthesis parameter: the pitch the patch was
     // fitted at. Never optimised, never exposed as a knob.

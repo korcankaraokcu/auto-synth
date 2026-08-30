@@ -373,7 +373,7 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
             static_cast<float> (juce::jlimit (0.0, 1.0, gains[i] / scale));
     if (hasNoise)
         patch.noiseLevel = static_cast<float> (juce::jlimit (0.0, 1.0, gains.back() / scale));
-    patch.masterLevel = static_cast<float> (juce::jlimit (0.0, 1.0, scale));
+    patch.masterLevel = static_cast<float> (juce::jlimit (0.0, (double) kMaxMasterLevel, scale));
 
     // A source solved to zero is one the analysis proposed and the mix
     // rejected. The loudest is always kept: "no oscillators" is never a better
@@ -513,7 +513,10 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     float peak = 0.0f;
     for (int i = 0; i < numSamples; ++i)
         peak = juce::jmax (peak, std::abs (samples[i]));
-    patch.masterLevel = juce::jlimit (0.05f, 1.0f, peak);
+    // The target's own peak, as a starting guess. It is only a guess: the peak
+    // a patch *reaches* is this times whatever the envelope and filter leave,
+    // so calibration and refinement both have room above one to make that up.
+    patch.masterLevel = juce::jlimit (0.05f, kMaxMasterLevel, peak);
 
     double f0Hint = 0.0, confidence = 0.0;
     Yin::estimate (samples, numSamples, sampleRate, f0Hint, confidence, options.hop);
