@@ -651,6 +651,29 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         // approximation is not currently carrying any weight.
         settings->setProperty ("reverb_high_shelf_gain",
                                juce::jlimit (-6.0f, 0.0f, -6.0f * patch.reverb.damp));
+
+        // No chorus in the reverb, which is both faithful and the difference
+        // between a measurable render and an unmeasurable one.
+        //
+        // Vital modulates its reverb with a chorus that free-runs at a quarter
+        // of a hertz by default -- a four second cycle -- and it is not reset by
+        // a note, by `reset()`, by reloading the preset, or by reallocating the
+        // plug-in's resources. So two renders of *one* patch differ by whatever
+        // that cycle has moved between them: measured, 0.072 at the sample on a
+        // peak of 0.43, and in the terms the objective is built from, a spectral
+        // distance of 0.057 and a loudness distance of two decibels. The fit's
+        // own loudness error is about four and a half, so nearly half of that
+        // term was the phase of a chorus nobody asked for.
+        //
+        // It alternated with every other render, which is what a four second
+        // cycle sampled every two seconds does, and it was there through every
+        // comparison made before it was found. Switched off, two renders of one
+        // patch agree to 0.0001.
+        //
+        // This engine's reverb is a Schroeder network with no modulation at all,
+        // so writing a chorused reverb was never faithful to the thing being
+        // fitted.
+        settings->setProperty ("reverb_chorus_amount", 0.0f);
     }
 
     // Written here rather than at the top only because the reverb decides how

@@ -40,6 +40,7 @@
   "stereo":          { "min": 0.0,   "max": 1.0,  "default": 0.0, "post_offset": 0.0, "scale": "kIndexed", "units": "" },
 
   "reverb_on":              { "min": 0.0,  "max": 1.0, "default": 0.0,  "post_offset": 0.0, "scale": "kIndexed",     "units": "" },
+  "reverb_chorus_amount":   { "min": 0.0,  "max": 1.0, "default": 0.223607, "post_offset": 0.0, "scale": "kQuadratic",   "units": "%" },
   "reverb_dry_wet":         { "min": 0.0,  "max": 1.0, "default": 0.25, "post_offset": 0.0, "scale": "kLinear",      "units": "%" },
   "reverb_decay_time":      { "min": -6.0, "max": 6.0, "default": 0.0,  "post_offset": 0.0, "scale": "kExponential", "units": " secs" },
   "reverb_high_shelf_gain": { "min": -6.0, "max": 0.0, "default": -1.0, "post_offset": 0.0, "scale": "kLinear",      "units": " dB" },

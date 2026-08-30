@@ -227,7 +227,10 @@ int main (int argc, char* argv[])
                       "[--note hz] [--dur s] [--gate s] [--sr rate] "
                       "[--plugin Vital.vst3] [--preset out.vital]\n"
                       "       autosynth_vital <patch-out.json> <out.wav> "
-                      "--fit <target.wav> [--refine-evals n]\n");
+                      "--fit <target.wav> [--refine-evals n]\n"
+                      "       autosynth_vital --eval [--trials n] [--seed n]\n"
+                      "       autosynth_vital <patch.json> <out.wav> --sweep\n"
+                      "       autosynth_vital <patch.json> <out.wav> --check-repeatable\n");
         return 2;
     }
 
@@ -333,9 +336,9 @@ int main (int argc, char* argv[])
     // this is the knob to reach for if a future preset renders as the init
     // patch. `--dump-state` is the other one.
     const auto settleMs = (int) args.value ("--settle", 0.0);
-    const auto loadPreset = [&] (const autosynth::Patch& p)
+    const auto loadJson = [&] (const juce::String& json)
     {
-        const auto wrapped = wrapAsVst3State (autosynth::VitalExport::toJson (p, p.name));
+        const auto wrapped = wrapAsVst3State (json);
         plugin->setStateInformation (wrapped.getData(), (int) wrapped.getSize());
         if (settleMs > 0)
             juce::MessageManager::getInstance()->runDispatchLoopUntil (settleMs);
@@ -353,6 +356,22 @@ int main (int argc, char* argv[])
         // dependence on evaluation *order* -- the kind of thing that makes an
         // optimiser's path irreproducible rather than merely noisy.
         plugin->reset();
+
+    };
+
+    const auto loadPreset = [&] (const autosynth::Patch& p)
+    {
+        loadJson (autosynth::VitalExport::toJson (p, p.name));
+    };
+
+    // Every parameter the host can see, as the plug-in currently holds them.
+    const auto snapshot = [&]
+    {
+        const auto& parameters = plugin->getParameters();
+        std::vector<float> values ((size_t) parameters.size());
+        for (int i = 0; i < parameters.size(); ++i)
+            values[(size_t) i] = parameters[i]->getValue();
+        return values;
     };
 
     // One rendered note, which is both the deliverable and, when fitting, one
@@ -368,11 +387,9 @@ int main (int argc, char* argv[])
         return juce::jlimit (0, 127, (int) std::lround (69.0 + 12.0 * std::log2 (hz / 440.0)));
     };
 
-    const auto renderPatch = [&] (const autosynth::Patch& p, double noteHz,
-                                  double dur, double gateSeconds)
+    // Rendering whatever the plug-in is currently holding.
+    const auto renderLoaded = [&] (double noteHz, double dur, double gateSeconds)
     {
-        loadPreset (p);
-
         const auto midiNote = noteFor (noteHz);
 
         // Reported latency is trimmed from the front rather than ignored,
@@ -424,6 +441,29 @@ int main (int argc, char* argv[])
         }
 
         return std::vector<float> (collected.begin() + latency, collected.begin() + latency + wanted);
+    };
+
+    // The first render of a process is not like the others: it begins with a
+    // silent reverb where every later one begins in whatever the previous
+    // render left behind. Refinement takes the loss of its starting patch as
+    // the reference that normalises every term's weight, so letting that one
+    // evaluation see different conditions from the other hundred and ninety-one
+    // skews the whole objective. One discarded render makes them all alike.
+    auto warmedUp = false;
+
+    const auto renderPatch = [&] (const autosynth::Patch& p, double noteHz,
+                                  double dur, double gateSeconds)
+    {
+        loadPreset (p);
+
+        if (! warmedUp)
+        {
+            warmedUp = true;
+            renderLoaded (noteHz, dur, gateSeconds);
+            loadPreset (p);
+        }
+
+        return renderLoaded (noteHz, dur, gateSeconds);
     };
 
     // Which searchable parameters actually move the sound Vital makes.
@@ -502,6 +542,46 @@ int main (int argc, char* argv[])
         std::printf ("\n");
         return 0;
     }
+
+    // Does one patch render the same way twice?
+    //
+    // It did not, and nothing about the failure was visible from the audio: two
+    // renders of one preset differed by 0.072 at the sample on a peak of 0.43,
+    // alternating on every other render. In the terms the objective is built
+    // from that was a spectral distance of 0.057 and two decibels of loudness,
+    // against a fit whose own loudness error is about four and a half -- so
+    // nearly half of that term was noise, and had been through every comparison
+    // made before it was found.
+    //
+    // The cause was Vital's reverb chorus free-running at a quarter of a hertz,
+    // sampled every two seconds; the exporter now switches it off. What remains
+    // is a random LFO where a patch has one, which is random by construction.
+    //
+    // Kept as a standing check because the failure is silent: an objective that
+    // returns a different number for the same patch reads as a search that
+    // cannot converge, and there is nothing in a rendered note that says so.
+    if (args.options.count ("--check-repeatable") > 0)
+    {
+        // renderPatch discards a warm-up render on its first call, so both of
+        // these begin from the same reverb state -- which is the state every
+        // evaluation of a fit begins from, and therefore the one worth checking.
+        const auto first = renderPatch (patch, patch.rootHz, duration, gate);
+        const auto second = renderPatch (patch, patch.rootHz, duration, gate);
+
+        auto worst = 0.0;
+        for (size_t i = 0; i < juce::jmin (first.size(), second.size()); ++i)
+            worst = juce::jmax (worst, (double) std::abs (first[i] - second[i]));
+
+        const auto self = autosynth::Recovery::score (first, second, sampleRate);
+        std::printf ("one patch rendered twice:\n"
+                     "  worst sample  %.6f\n"
+                     "  spectral      %.4f\n"
+                     "  loudness      %.2f dB\n"
+                     "  centroid      %.3f oct\n",
+                     worst, self.spectral, self.loudnessDb, self.centroidOctaves);
+        return self.loudnessDb < 1.0 ? 0 : 1;
+    }
+
 
     // The recovery harness, with Vital as the synth being measured.
     //

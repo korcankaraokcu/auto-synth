@@ -797,6 +797,61 @@ therefore load in later versions with the newer parameters at their defaults.
 That is an argument from four versions of evidence, not a guarantee about a
 version nobody here has.
 
+### The objective was measuring a chorus nobody asked for
+
+Rendering one patch twice through Vital does not give the same audio. It had
+never been checked against a *scale that matters*: an earlier note here recorded
+renders alternating between two states 0.035 apart and left it as an oddity.
+Put through the same terms the objective is built from, it was not an oddity --
+a spectral distance of 0.057 and **two decibels of loudness**, against a fit
+whose own loudness error is about four and a half. Nearly half of that term was
+noise, and it had been there through every comparison in this file.
+
+Two separate processes render bit-identically, so Vital is deterministic and the
+state was within the process. Bisecting by switching settings off found it in
+one step: with `reverb_on = 0` two renders agree exactly.
+
+**Vital's reverb has a chorus, free-running at a quarter of a hertz.** Nothing
+resets it -- not a note, not `reset()`, not reloading the preset, not
+reallocating the plug-in's resources -- so a render samples it wherever it
+happens to be. A four second cycle sampled every two seconds is why the
+alternation had a period of two, and why a two second flush of silence appeared
+to fix it while three seconds did not: four seconds of cycle per pass lands on
+the same phase.
+
+Switching it off costs nothing and is the faithful choice anyway, since this
+engine's reverb is a Schroeder network with no modulation at all -- a chorused
+reverb was never part of what was fitted. Two renders of one patch now agree to
+0.0001 spectral and 0.00 dB.
+
+A second, smaller effect turned up with it: the first render of a process begins
+with a silent reverb where every later one begins in the previous render's tail.
+Refinement takes the loss of its *starting* patch as the reference that
+normalises every term's weight, so that one evaluation was seeing different
+conditions from the other hundred and ninety-one. One discarded render at the
+start makes them alike.
+
+What remains is a random LFO where a patch has one -- 0.12 dB on the violin,
+random by construction -- and `--check-repeatable` reports it, because an
+objective that answers differently for the same patch reads as a search that
+cannot converge and there is nothing in a rendered note that says so.
+
+**On making this faster.** The same investigation measured where a fit's time
+goes, since refinement reloads the whole preset for every candidate. It is the
+wavetable: one keyframe per oscillator loads in 13 ms and three in 153 ms,
+because Vital interpolates and resynthesises all 257 wave frames and their
+mipmaps. None of it changes during a fit -- the frames are a measurement, so
+refinement never moves them -- and it is paid a hundred and ninety-two times.
+
+Setting the scalars through the host's parameter interface would skip it, and
+the premise checks out: all 2852 of Vital's parameter names are distinct, the
+normalisation is exactly `(raw - min) / (max - min)` -- confirmed against four
+controls with different curves, giving slopes of 1/2.37842, 1, 1/128 and
+1/7399.44 -- and a parameter *set* renders no differently from the same value
+*loaded*. It is not built, because it is a second path that can silently
+disagree with the first, and the measurement above was worth more than the
+speed. Recorded here so the next person does not have to re-derive it.
+
 ### Two axes the diagnostic did not have
 
 Every axis in `autosynth_diff` was shape-relative: each signal normalised by its
@@ -2401,6 +2456,76 @@ At ~33% exact, this is the ceiling on everything else.
   above and has now been observed: a reverb tail and a long release are
   near-degenerate, and a wrong gate with a long release scored *better* than a
   correct one because the release was imitating the reverb.
+
+### Retiring this engine
+
+The direction is settled: the deliverable is a Vital preset, so this engine is a
+means rather than an end, and the pivot finishes when Vital renders everything.
+What it still does, and what has to be true before it stops:
+
+**It renders every refinement candidate**, and it should stop. A Vital-backed
+renderer exists (`Refine::Options::renderer`, supplied by `autosynth_vital
+--fit`) and is not yet the default.
+
+Re-run once the export was clean, the comparison is no longer ambiguous. Fitted
+through Vital and played by Vital, against fitted here and played by Vital:
+
+| clarinet | through this engine | through Vital |
+|---|---|---|
+| brightness | 0.20 oct dull | ok |
+| amplitude wobble | 1.77 dB out | ok |
+| timbre drift | 2.70 dB out | 1.35 dB out |
+| peak level | 6.63 dB loud | ok |
+| sustain vs peak | ok | 3.72 dB out |
+
+| violin | through this engine | through Vital |
+|---|---|---|
+| noisiness | 0.04 out | ok |
+| attack | 0.17 s out | ok |
+| timbre drift | 1.13 dB out | ok |
+| onset at 50 ms | ok | 0.17 out |
+
+Five axes out of tolerance become four on both, which undersells it: what comes
+right is brightness, wobble, drift, noisiness and attack, and the clarinet's
+level stops being six decibels hot because the optimiser can finally see what it
+is actually producing. What goes wrong is the sustain-to-peak and the onset --
+the two newest terms, and the two carrying the least weight in a seven-term sum.
+Both notes also release about a tenth of a second late.
+
+The first attempt at this comparison came out mixed and was then found to be
+confounded by parameters the export could not carry. It is worth recording that
+the earlier result was not evidence against the idea; it was evidence that the
+measurement was broken, and there is no way to tell those apart except by fixing
+the measurement and asking again.
+
+Making it the default is a decision rather than a patch, because it makes Vital
+a *requirement* for fitting anything at all -- `Refine` cannot host a plug-in,
+so the tools would have to, and a machine without Vital could no longer fit. For
+a project whose output is a Vital preset that is arguably the honest dependency,
+but it is not a change to make quietly.
+
+**It renders the recovery harness**, likewise, and `--eval` likewise exists.
+
+**It costs about ninety seconds a fit against thirty-three**, which is fine for
+converting a sample and turns twelve harness trials from two minutes into
+thirty-five. Worth knowing whether parallel plug-in instances help before
+committing to it.
+
+**It anchors forty golden patch-and-render fixture pairs, and this is the part
+without a clean answer.** They pin this engine's behaviour sample by sample.
+Without the engine they are dead, and Vital-rendered replacements are not
+reproducible: they would depend on the version installed on one machine, so they
+would fail on any other. The conformance suite loses its anchor. Either it goes,
+or fixtures are generated from a pinned build of the fork -- which is the
+submodule that hosting the installed plug-in was chosen to avoid.
+
+**And it is half of every A/B in this file.** Three of one day's bugs -- the
+reverb proportion, the level clipping against it, the squared envelope -- were
+found by rendering one patch through both engines and diffing. After the
+removal, everything must be caught against the recording alone. That is why the
+sustain-to-peak and onset axes were added first: they close the specific hole
+that comparison had been covering, and the ear had already found both faults
+through it.
 
 ### Platform and reach
 
