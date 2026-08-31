@@ -208,7 +208,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-117 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+118 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
 `[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
@@ -2442,6 +2442,55 @@ Worth stating plainly, because it is the third time in this file: **the loss
 could not see any of these.** Two were invisible to all seven terms and the
 third was worth twelve decibels. Every one of them was found by a listener or by
 a test that compared a number against something absolute.
+
+### The level had no anchor, and two biases decided it
+
+The level being *reachable* did not make it *reliable*. Fitted from three seeds,
+one clarinet came back 6.9 dB quiet, correct, and correct again — and
+`sustain vs peak` was out on all three, by 1.8, 6.0 and 6.1 dB. A fit is one
+sample of a search, so `--seed` is now on `--fit` and a change that moves one
+axis is read against that spread rather than against one run.
+
+`--score` answers the question a single total cannot: given a patch that came
+out quiet, did the objective *prefer* it, or did the search miss the loud one?
+Those need opposite fixes. Scoring the quiet fit against hand-corrected copies
+of itself settled it in four renders — raising the master made the loudness term
+*worse*, 5.78 dB to 11.96, so the objective preferred the quiet patch and was
+right to by its own lights.
+
+Because the error was in the tail. Frame by frame against the recording, a
+quarter of a second after note-off the target had fallen to −26 dB and the fit
+was still at −4.8: **21.5 dB too loud**, in a term that is a mean over every
+frame. A tail like that outweighs a body 3 dB quiet, and the cheapest way to
+reduce it is to turn the whole patch down. Meanwhile `spectral` pulls the other
+way — it falls monotonically as a fit gets louder, 2.36 to 2.27 over a 7 dB
+rise. The level a listener heard was whatever those two biases cancelled to.
+
+So the fix is a term that measures the thing directly: the median level of the
+note, before the release, in the same decibel scale the loudness term already
+uses. A median so the attack cannot reach it, and only over the note so the tail
+cannot either. On three seeds it takes `peak level` from one failure in three to
+one, and `sustain vs peak` from **three failures in three to one** — the
+envelope stops being spent on level.
+
+**And a negative result, measured and dropped.** The obvious reading of the tail
+error is that the reverb is fitted wrong, so the reverb was calibrated
+closed-loop against the render, the same way the noise level is: measure how far
+the tail sits below the note a quarter-second after release, correct the return
+gain, repeat. It works as a reverb fix — mean tail error over three seeds fell
+from 7.18 dB to 5.02 — and it makes the *output* worse, because removing the
+downward bias leaves the spectral term's upward one unopposed: level went from
+one failure in three to two, in the other direction.
+
+Combining it with the level term was worse still: 8.66 dB of tail error, both
+changes fighting over the same decibels. The level term alone is the one that
+paid. `EffectsFit::detectReverb` fitting a decay rate to the late tail is a real
+defect, and it should be fixed when the thing it distorts is not already being
+held down by something else.
+
+What is left, and it is now the clearest fault on both samples: the fitted
+amplitude envelope is too peaky. `sustain vs peak` is the axis that survives
+every one of these changes, and the onset is out on every seed of both samples.
 
 ### Traps found along the way
 

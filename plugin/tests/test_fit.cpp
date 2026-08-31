@@ -537,6 +537,53 @@ TEST_CASE ("a fit without a renderer is visibly unfinished", "[fit]")
     CHECK (fitted.noiseLevel > 0.0f);
 }
 
+TEST_CASE ("the objective can see a patch that is simply quiet", "[fit]")
+{
+    // The anchor the loss was missing, and the reason the level wandered.
+    //
+    // `loudness` is a mean over every frame, so a tail 20 dB too loud outweighs
+    // a note body 3 dB too quiet, and the cheapest way for an optimiser to
+    // reduce it is to turn the whole patch down. `spectral` pulls the other
+    // way. Between them the level a listener hears was whatever the two biases
+    // cancelled to, which is how one clarinet fitted from three seeds came back
+    // 6.9 dB quiet, correct, and correct again.
+    //
+    // This term is a median over the note alone, so the tail cannot reach it
+    // and the attack cannot either.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.01f, 0.1f, 0.7f, 0.15f, 0.0f };
+    patch.masterLevel = 0.6f;
+
+    const auto target = render (patch, 220.0, 2.0, 1.4);
+
+    Refine::Options options;
+    options.gateSeconds = 1.4;
+    options.renderer = renderer();
+
+    const auto matched = Refine::measure (patch, target.data(), (int) target.size(),
+                                          kSampleRate, options);
+    INFO ("matched level error " << matched.level << " dB");
+    CHECK (matched.level < 0.5);
+
+    // Half the gain is 6 dB down, and the term reads it as such rather than
+    // normalising it away.
+    auto quiet = patch;
+    quiet.masterLevel = 0.3f;
+    const auto quieter = Refine::measure (quiet, target.data(), (int) target.size(),
+                                          kSampleRate, options);
+    INFO ("6 dB down reads as " << quieter.level << " dB");
+    CHECK (quieter.level == Catch::Approx (6.0).margin (1.5));
+
+    // And the same the other way, so it is a distance rather than a penalty on
+    // being quiet.
+    auto loud = patch;
+    loud.masterLevel = 1.2f;
+    const auto louder = Refine::measure (loud, target.data(), (int) target.size(),
+                                         kSampleRate, options);
+    INFO ("6 dB up reads as " << louder.level << " dB");
+    CHECK (louder.level == Catch::Approx (6.0).margin (1.5));
+}
+
 TEST_CASE ("the master is not clamped to one", "[fit]")
 {
     // Every axis but one in the diagnostic is shape-relative, so a fit that is

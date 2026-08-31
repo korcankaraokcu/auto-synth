@@ -23,6 +23,9 @@ constexpr double kDynamicRangeDb = 80.0;
 // and dominating the search.
 const std::map<std::string, double> kFloors {
     { "spectral", 0.10 }, { "loudness", 0.50 }, { "centroid", 0.05 },
+    // Level is a median over the note, so half a decibel is already below what
+    // anyone would call a difference.
+    { "level", 0.50 },
     // The trajectory terms are errors against a measurement rather than
     // distances, so their floors are the tolerance below which the diagnostic
     // would call them equal: 30 ms of attack, and a decibel of movement.
@@ -62,6 +65,34 @@ std::vector<float> envelopeDb (const float* samples, int numSamples, double samp
         v = static_cast<float> (std::max (20.0 * std::log10 (v / referencePeak + 1.0e-12),
                                           -kDynamicRangeDb));
     return env;
+}
+
+// The note's own loudness: the median of the frames before it is released.
+//
+// A median rather than a mean, so that the attack transient and the tail both
+// stay out of it, and only over the note because the tail is where a fit and a
+// recording disagree most and by the largest margin.
+//
+// This exists because nothing else in the objective anchors absolute level
+// reliably. The loudness term is a mean over *all* frames, so a tail 20 dB too
+// loud outweighs a body 3 dB too quiet and the cheapest way to reduce it is to
+// turn the whole patch down. And the spectral term pulls the other way -- it
+// falls monotonically as a fit gets louder, measured at 2.36 to 2.27 over a
+// 7 dB rise. Between the two, the level a listener hears was whatever those
+// biases happened to cancel to, which is why the same material fitted from
+// three different seeds came back 6.9 dB quiet, correct, and correct again.
+double bodyDb (const std::vector<float>& envelopeInDb, double gate, double sampleRate)
+{
+    if (envelopeInDb.empty())
+        return -kDynamicRangeDb;
+
+    const auto dt = 256.0 / sampleRate;
+    const auto gateIndex = juce::jlimit (1, static_cast<int> (envelopeInDb.size()),
+                                         static_cast<int> (std::lround (gate / dt)));
+
+    std::vector<float> body (envelopeInDb.begin(), envelopeInDb.begin() + gateIndex);
+    std::sort (body.begin(), body.end());
+    return body[body.size() / 2];
 }
 
 float envelopePeak (const float* samples, int numSamples)
@@ -206,6 +237,7 @@ struct TargetFeatures
 {
     std::vector<Stft::Result> spectrograms;
     std::vector<float> loudnessDb;
+    double bodyLevelDb = 0.0;
     std::vector<float> centroidLog2;
     float loudnessPeak = 0.0f;
     double attackSeconds = 0.0;
@@ -221,6 +253,7 @@ struct TargetFeatures
             spectrograms.push_back (Stft::magnitudeSpectrogram (samples, numSamples, scale,
                                                                 std::max (1, scale / 4), sampleRate));
         loudnessDb = envelopeDb (samples, numSamples, sampleRate, loudnessPeak);
+        bodyLevelDb = bodyDb (loudnessDb, gate, sampleRate);
 
         const auto centroid = Stft::spectralCentroid (spectrograms.back());
         centroidLog2.resize (centroid.size());
@@ -272,6 +305,9 @@ Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
     for (size_t i = 0; i < loudCount; ++i)
         loss.loudness += std::abs (target.loudnessDb[i] - loud[i]);
     loss.loudness /= std::max<size_t> (loudCount, 1);
+
+    // Absolute, because `loud` is already referenced to the *target's* peak.
+    loss.level = std::abs (target.bodyLevelDb - bodyDb (loud, gate, sampleRate));
 
     const auto spectrogram = Stft::magnitudeSpectrogram (samples, numSamples, kSearchScales[1],
                                                          kSearchScales[1] / 4, sampleRate);
@@ -626,6 +662,57 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
     return valid;
 }
 
+namespace
+{
+
+// Where the note is released: what the caller said, or what the target shows.
+//
+// Shared by `run` and `measure` so that a score and the search that produced it
+// are taken against the same note. Scoring a patch against a different gate
+// from the one it was fitted at answers a different question.
+//
+// Detected from the target when the caller does not say, which is the common
+// case. The old default was `duration` -- hold the note for the whole file --
+// and that is wrong for anything that stops before the end, which is every real
+// recording: candidates were rendered still sounding while the target had gone
+// quiet seconds earlier, so the only way to fit was to mangle the envelope into
+// faking a release it was never allowed to perform. On two library samples
+// refinement made the fit three to five times worse this way.
+//
+// The recovery harness never showed it because it passes the gate explicitly --
+// the one caller that did.
+double gateFor (const float* target, int numSamples, double sampleRate, double requested)
+{
+    if (requested >= 0.0)
+        return requested;
+
+    const auto duration = numSamples / sampleRate;
+    const auto rms = Stft::loudnessEnvelope (target, numSamples, 256);
+    std::vector<float> times (rms.size());
+    for (size_t i = 0; i < rms.size(); ++i)
+        times[i] = static_cast<float> (i * 256.0 / sampleRate);
+
+    const auto detected = EnvelopeFit::detectGate (rms, times);
+    return detected.oneShot ? duration : detected.time;
+}
+
+} // namespace
+
+Refine::Loss Refine::measure (const Patch& patch, const float* target, int numSamples,
+                              double sampleRate, const Options& options)
+{
+    if (numSamples <= 0 || ! options.renderer)
+        return {};
+
+    const auto duration = numSamples / sampleRate;
+    const auto gate = gateFor (target, numSamples, sampleRate, options.gateSeconds);
+
+    const TargetFeatures features (target, numSamples, sampleRate, gate, patch.rootHz);
+    const auto rendered = options.renderer (patch, duration, gate);
+    return lossComponents (features, rendered.data(), (int) rendered.size(), sampleRate,
+                           gate, patch.rootHz);
+}
+
 Refine::Result Refine::run (const Patch& patch, const float* target, int numSamples,
                             double sampleRate, const Options& options)
 {
@@ -642,31 +729,7 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     const auto& table = specTable();
     const auto duration = numSamples / sampleRate;
 
-    // Where the note is released. Detected from the target when the caller does
-    // not say, which is the common case.
-    //
-    // The old default was `duration` -- hold the note for the whole file. That
-    // is wrong for anything that stops before the end, which is every real
-    // recording: candidates were rendered still sounding while the target had
-    // gone quiet seconds earlier, so the only way to fit was to mangle the
-    // envelope into faking a release it was never allowed to perform. On two
-    // library samples refinement made the fit three to five times worse this
-    // way, and the plugin refines by default, so what it produced was worse
-    // than the raw analysis it started from.
-    //
-    // The recovery harness never showed it because it passes the gate
-    // explicitly -- the one caller that did.
-    auto gate = options.gateSeconds;
-    if (gate < 0.0)
-    {
-        const auto rms = Stft::loudnessEnvelope (target, numSamples, 256);
-        std::vector<float> times (rms.size());
-        for (size_t i = 0; i < rms.size(); ++i)
-            times[i] = static_cast<float> (i * 256.0 / sampleRate);
-
-        const auto detected = EnvelopeFit::detectGate (rms, times);
-        gate = detected.oneShot ? duration : detected.time;
-    }
+    const auto gate = gateFor (target, numSamples, sampleRate, options.gateSeconds);
     result.gateSeconds = gate;
 
     // Noise is measured, and refinement may only sharpen it.
@@ -813,13 +876,14 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     const auto wDrift = weightFor (start.drift, "drift");
     const auto wWobble = weightFor (start.wobble, "wobble");
     const auto wOnset = weightFor (start.onset, "onset");
+    const auto wLevel = weightFor (start.level, "level");
 
     const auto combine = [&] (const Loss& loss)
     {
         return (wSpectral * loss.spectral + wLoudness * loss.loudness
                 + wCentroid * loss.centroid + wAttack * loss.attack
                 + wDrift * loss.drift + wWobble * loss.wobble
-                + wOnset * loss.onset) / 7.0;
+                + wOnset * loss.onset + wLevel * loss.level) / 8.0;
     };
 
     CmaEs::Options cmaOptions;

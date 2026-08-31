@@ -834,8 +834,8 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
                        * static_cast<float> (juce::jlimit (0.0, 1.0, share / kFullNoiseShare));
     auto calibrated = calibrateLevels (patch, samples, numSamples, sampleRate, gateTime,
                                        options.renderer, ceiling);
-    return calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate, gateTime,
-                           static_cast<float> (ceiling), options.renderer);
+    return calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate,
+                           gateTime, static_cast<float> (ceiling), options.renderer);
 }
 
 } // namespace autosynth

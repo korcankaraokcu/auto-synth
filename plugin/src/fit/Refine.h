@@ -25,8 +25,9 @@ public:
         unsigned seed = 1;
         double gateSeconds = -1.0;
 
-        // How a candidate patch becomes audio. Left empty, this uses the engine
-        // in this repository.
+        // How a candidate patch becomes audio. There is no default: refinement
+        // is a closed loop around a synth, so without one it returns the patch
+        // it was given rather than optimising against nothing.
         //
         // It is a callback rather than a build-time choice so that nothing here
         // has to know about plug-in hosting: the caller that owns a synth owns
@@ -59,6 +60,7 @@ public:
 
     static Result run (const Patch& patch, const float* target, int numSamples,
                        double sampleRate, const Options& options = {});
+
 
     // Which continuous parameters are worth searching for this patch.
     //
@@ -98,7 +100,23 @@ public:
         double drift = 0.0;     // decibels away from its harmonic movement
         double wobble = 0.0;    // decibels away from its wobble depth
         double onset = 0.0;     // how far off the level fifty milliseconds in
+        double level = 0.0;     // decibels away from the note's own loudness
     };
+
+    // What one patch scores against one target, term by term.
+    //
+    // The same measurement `run` optimises, exposed because a total is not a
+    // diagnosis. When a fit comes back quiet, the question is whether the
+    // objective *preferred* the quiet patch or the search merely failed to find
+    // the loud one, and those need opposite fixes -- one is a weighting bug and
+    // the other is a search one. Scoring a patch and a hand-corrected copy of
+    // it answers that in two renders.
+    //
+    // The weights are deliberately not applied: they are relative to whatever
+    // patch a run started from, so a weighted number means nothing outside its
+    // own run. These are the raw terms, in the units the struct names.
+    static Loss measure (const Patch& patch, const float* target, int numSamples,
+                         double sampleRate, const Options& options = {});
 
     // The searchable range of one continuous parameter.
     //

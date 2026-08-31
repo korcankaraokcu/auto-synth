@@ -180,6 +180,7 @@ int main (int argc, char* argv[])
                       "[--plugin Vital.vst3] [--preset out.vital]\n"
                       "       autosynth_vital <patch-out.json> <out.wav> "
                       "--fit <target.wav> [--refine-evals n] [--seed n]\n"
+                      "       autosynth_vital <patch.json> <out.wav> --score <target.wav>\n"
                       "       autosynth_vital --eval [--trials n] [--seed n]\n"
                       "       autosynth_vital <patch.json> <out.wav> --sweep\n"
                       "       autosynth_vital <patch.json> <out.wav> --check-repeatable\n");
@@ -392,6 +393,50 @@ int main (int argc, char* argv[])
         return self.loudnessDb < 1.0 ? 0 : 1;
     }
 
+
+    // Scoring one patch against one recording, term by term.
+    //
+    // The objective is what decides every fit, and until now the only way to
+    // see it was the two numbers a fit prints on its way past. That is enough
+    // to know a search moved and not enough to know what it was chasing: when a
+    // fit comes back quiet, "the objective preferred it" and "the search missed
+    // it" look identical from outside and need opposite fixes.
+    //
+    // Scoring a patch and a hand-corrected copy of it separates them in two
+    // renders. Weights are not applied, because they are relative to whatever
+    // patch a run started from and mean nothing outside it.
+    if (const auto it = args.options.find ("--score"); it != args.options.end()
+        && it->second.isNotEmpty())
+    {
+        double targetRate = 0.0;
+        const auto against = readMono (cwd.getChildFile (it->second), targetRate);
+        if (against.empty())
+        {
+            std::fprintf (stderr, "error: cannot read %s\n", it->second.toRawUTF8());
+            return 1;
+        }
+
+        autosynth::Refine::Options scoreOptions;
+        scoreOptions.gateSeconds = args.options.count ("--gate") > 0 ? gate : -1.0;
+        scoreOptions.renderer = renderer;
+
+        const auto loss = autosynth::Refine::measure (patch, against.data(),
+                                                      (int) against.size(),
+                                                      targetRate, scoreOptions);
+        std::printf ("%s against %s\n"
+                     "  spectral   %8.4f\n"
+                     "  loudness   %8.4f dB\n"
+                     "  centroid   %8.4f oct\n"
+                     "  attack     %8.4f s\n"
+                     "  drift      %8.4f dB\n"
+                     "  wobble     %8.4f dB\n"
+                     "  onset      %8.4f\n"
+                     "  level      %8.4f dB\n",
+                     patchFile.getFileName().toRawUTF8(), it->second.toRawUTF8(),
+                     loss.spectral, loss.loudness, loss.centroid, loss.attack,
+                     loss.drift, loss.wobble, loss.onset, loss.level);
+        return 0;
+    }
 
     // The recovery harness, with Vital as the synth being measured.
     //
