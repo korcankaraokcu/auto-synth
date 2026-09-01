@@ -208,7 +208,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-121 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+123 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
 `[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
@@ -2729,6 +2729,61 @@ wrong: the fit arrives 700 ms before the recording does, so its early frames are
 too quiet and its late ones too loud, and the objective buys the contrast
 somewhere. The violin misses the transient ladder's margin by three points.
 Closing that gap is the fix for this, not a constraint on the decay.
+
+### The decay was the next volume control, and the wander had never fired
+
+Two ear reports in one message: the violin still drops suddenly, in env 1; and
+the clarinet has gained a vibrato that does not belong to it. Different faults,
+both real, and the second had been hiding since the feature was written.
+
+**The decay.** Refinement was replacing the measured decay rather than polishing
+it — a violin analysis measured at 1.43 s came back at 0.227, a sixth. Scoring
+one fitted patch at four decay times says what bought it:
+
+| decay | spectral | loudness | drift | level |
+|---|---|---|---|---|
+| 0.23 s | 1.639 | **9.75** | 2.02 | **1.05** |
+| 1.43 s | 1.622 | 9.98 | 1.82 | 1.65 |
+| 4.00 s | 1.625 | 10.99 | 1.71 | 3.99 |
+
+`loudness` and `level` buy the short decay while `spectral` and `drift` pay,
+which is the reverb's fault one step along: a parameter used as a volume
+control. So `amp_env.decay` is now held to half-to-double of what analysis
+measured, on the same rule as the noise level, and the violin's decay lands at
+1.13 s. Smoothed of its tremolo, its worst fall in any tenth of a second goes
+from 5.6 dB to 0.68 — against the recording's own 1.70.
+
+That costs the violin's peak level, which reads 4.5 dB quiet where it read ok.
+It is not a level error: at the fitted master the `level` term is 0.96 dB, so
+the note's *body* is right. What is missing is the target's peak, a transient
+the model cannot reach, and the short decay had been faking it by dropping the
+body out from under a peak. The honest fix is upstream, in the rise.
+
+**The wander.** The clarinet's tremolo is a single clean sinusoid where the
+recording's breath is spread from 0.4 to 3.3 Hz with no dominant peak — the
+limitation this file already recorded a listener hearing. What is new is why the
+cure never worked: `Modulation::detectWander` reported the clarinet drifting
+0.37 octaves over 7 cycles and then called it **steady**, because the drift
+series carries one sample per cycle of the modulation and the rate was being
+read by a spectrum that declines anything under sixteen samples. It returned
+zero, and the acceptance test required a rate above zero.
+
+So every LFO this project has ever fitted has been dead steady, and the feature
+that exists to prevent that has never once fired on either library sample.
+Counted from zero crossings instead — coarse, and possible on seven points — the
+clarinet gets 0.37 octaves at 0.33 Hz and the violin 0.81 at 1.39.
+
+It helps, and less than one would like. The share of the amplitude movement
+sitting in its single strongest bin:
+
+| | share |
+|---|---|
+| recording | 17.3% |
+| fit, wander off | 48.0% |
+| fit, wander on | 42.8% |
+
+A sixth of the way, on a fault whose real answer is still that an LFO is the
+wrong model for breath.
 
 ### Traps found along the way
 

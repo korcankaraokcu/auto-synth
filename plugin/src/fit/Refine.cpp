@@ -773,19 +773,46 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     // harness's brightness error up by a third on patches whose noise was
     // already zero. Half to double, like the measured attack before it.
     constexpr double kNoiseSearchFactor = 2.0;
+
+    // And the amplitude envelope's decay, on the same rule and for the same
+    // reason.
+    //
+    // How long the note takes to settle is read straight off the loudness
+    // contour, which is the most directly observable thing in the whole fit.
+    // Refinement is not supposed to re-decide it -- and it did: a violin
+    // measured at 1.43 s came back at 0.227, a sixth of it, which a listener
+    // reported as the note dropping out from under itself. Scoring that patch
+    // at four decay times says what bought it, `loudness` at 9.75 against 10.99
+    // and `level` at 1.05 against 3.99, with `spectral` and `drift` paying --
+    // the decay used as a volume control, which is the reverb's fault one level
+    // along.
+    //
+    // The real error is upstream: the fit's rise arrives 700 ms before the
+    // recording's, so its early frames are quiet and its late ones loud and the
+    // objective buys the contrast wherever it is cheapest. Until that is fixed
+    // this stops the bill being paid out of the one parameter a listener hears
+    // immediately.
+    constexpr double kDecaySearchFactor = 2.0;
+
     std::vector<Spec> specs;
     specs.reserve (scope.size());
     for (const auto& path : scope)
     {
         auto spec = table.at (path);
-        if (path == "noise_level")
+        const auto bound = [&spec, &patch, &path] (double factor)
         {
             const auto measured = getParameter (patch, path);
-            spec.lo = juce::jmax (spec.lo, measured / kNoiseSearchFactor);
-            spec.hi = juce::jmin (spec.hi, measured * kNoiseSearchFactor);
+            spec.lo = juce::jmax (spec.lo, measured / factor);
+            spec.hi = juce::jmin (spec.hi, measured * factor);
             if (spec.hi <= spec.lo)
                 spec.hi = spec.lo + 1.0e-6;
-        }
+        };
+
+        if (path == "noise_level")
+            bound (kNoiseSearchFactor);
+        else if (path == "amp_env.decay")
+            bound (kDecaySearchFactor);
+
         specs.push_back (spec);
     }
 

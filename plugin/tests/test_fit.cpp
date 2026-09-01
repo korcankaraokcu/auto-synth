@@ -537,6 +537,86 @@ TEST_CASE ("a fit without a renderer is visibly unfinished", "[fit]")
     CHECK (fitted.noiseLevel > 0.0f);
 }
 
+TEST_CASE ("wander is detectable in the few cycles a note actually has", "[fit]")
+{
+    // The feature was measured, built, exported and never once fired.
+    //
+    // The drift series carries one sample per cycle of the modulation, so a
+    // clarinet's two-second tremolo yields seven numbers -- and the rate was
+    // being read by a spectrum that declines anything under sixteen samples. It
+    // returned zero, the acceptance test required a rate above zero, and every
+    // LFO this project has ever fitted came out dead steady while the detector
+    // reported 0.37 octaves of drift and called it "steady" in the same breath.
+    //
+    // Seven samples is what there is. The rate is counted from zero crossings
+    // now, which is coarse and possible.
+    constexpr double dt = 1.0 / 200.0;
+    constexpr double seconds = 2.1;
+    const auto n = (int) (seconds / dt);
+
+    std::vector<float> y ((size_t) n);
+    double phase = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        const auto t = i * dt;
+        // 3.3 Hz, its rate drifting a third of an octave at a third of a hertz:
+        // the clarinet's own numbers.
+        const auto rate = 3.3 * std::pow (2.0, 0.60 * std::sin (2.0 * juce::MathConstants<double>::pi * 0.33 * t));
+        phase += rate * dt;
+        y[(size_t) i] = (float) std::sin (2.0 * juce::MathConstants<double>::pi * phase);
+    }
+
+    const auto wander = Modulation::detectWander (y, dt);
+    INFO ("octaves " << wander.octaves << " rate " << wander.rateHz
+          << " over " << wander.cycles << " cycles, found " << wander.found);
+    CHECK (wander.cycles < 16);          // the case the spectrum could not take
+    CHECK (wander.octaves > 0.1);
+    CHECK (wander.rateHz > 0.0);
+    CHECK (wander.found);
+
+    // And a steady one still reads as steady, which is the half that matters
+    // for every patch that has no business drifting.
+    std::vector<float> steady ((size_t) n);
+    for (int i = 0; i < n; ++i)
+        steady[(size_t) i] = (float) std::sin (2.0 * juce::MathConstants<double>::pi * 3.3 * i * dt);
+    CHECK_FALSE (Modulation::detectWander (steady, dt).found);
+}
+
+TEST_CASE ("refinement polishes the measured decay rather than replacing it", "[fit]")
+{
+    // How long a note takes to settle is read straight off the loudness
+    // contour, which is the most directly observable quantity in the fit.
+    // Refinement is allowed to polish it and not to re-decide it.
+    //
+    // It did re-decide it: a violin measured at 1.43 s came back at 0.227, a
+    // sixth, and a listener reported the note dropping out from under itself.
+    // Scoring that patch at four decay times says what bought it -- `loudness`
+    // and `level` improve as the decay shortens while `spectral` and `drift`
+    // pay -- which is the decay used as a volume control, the same shape as the
+    // reverb before it.
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.02f, 0.8f, 0.5f, 0.1f, 1.0f };
+    const auto target = render (patch, 220.0, 2.5, 1.8);
+
+    PartialFit::Options fitOptions;
+    fitOptions.hop = kHop;
+    fitOptions.gateSeconds = 1.8;
+    fitOptions.renderer = renderer();
+    const auto analysed = PartialFit::fit (target.data(), (int) target.size(),
+                                           kSampleRate, fitOptions);
+
+    Refine::Options options;
+    options.maxEvaluations = 32;
+    options.gateSeconds = 1.8;
+    options.renderer = renderer();
+    const auto refined = Refine::run (analysed, target.data(), (int) target.size(),
+                                      kSampleRate, options).patch;
+
+    INFO ("analysis " << analysed.ampEnv.decay << " s, refined " << refined.ampEnv.decay << " s");
+    CHECK (refined.ampEnv.decay >= analysed.ampEnv.decay / 2.001f);
+    CHECK (refined.ampEnv.decay <= analysed.ampEnv.decay * 2.001f);
+}
+
 TEST_CASE ("the objective can see a patch that is simply quiet", "[fit]")
 {
     // The anchor the loss was missing, and the reason the level wandered.

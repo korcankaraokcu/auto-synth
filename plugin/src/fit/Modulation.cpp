@@ -299,7 +299,25 @@ Modulation::Wander Modulation::detectWander (const std::vector<float>& y, double
     // against that sampling interval rather than the audio one.
     for (auto& v : drift)
         v -= static_cast<float> (mean);
-    out.rateHz = dominantRateHz (drift, median);
+
+    // And counted rather than transformed, because it is far too short for a
+    // spectrum. One sample per cycle of the modulation means a clarinet's
+    // two-second tremolo yields seven numbers, and `dominantRateHz` declines
+    // anything under sixteen -- so the wander rate came back zero, the `found`
+    // test failed on it, and this feature had never once fired on either
+    // library sample despite being measured, built and exported. It reported
+    // 0.37 octaves of drift and then called the LFO steady.
+    //
+    // Zero crossings are what a seven-point series can actually support: two
+    // crossings to a cycle, over the span the series covers. Coarse, and enough
+    // to tell a rate apart from no rate at all.
+    auto driftCrossings = 0;
+    for (size_t i = 1; i < drift.size(); ++i)
+        if ((drift[i - 1] <= 0.0f) != (drift[i] <= 0.0f))
+            ++driftCrossings;
+
+    const auto span = median * static_cast<double> (drift.size());
+    out.rateHz = span > 1.0e-9 ? 0.5 * driftCrossings / span : 0.0;
 
     out.found = out.octaves >= kMinWanderOctaves && out.rateHz > 0.0
              && out.cycles >= kMinWanderCycles;
