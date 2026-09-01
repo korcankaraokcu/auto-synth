@@ -2676,6 +2676,60 @@ will show up somewhere else entirely.** Three separate investigations blamed the
 tail on the reverb estimator, on the loudness term's averaging, and on the
 transient, and the fault was in the exporter the whole time.
 
+### An oscillator envelope's sustain is structure, not a value
+
+Reported by ear, and reported precisely: "the sudden drop is back, very apparent
+in the clarinet, env 4 to volume". It was, and it was in exactly that
+modulation.
+
+`addTransient` gives the body oscillator an envelope whose job is to arrive
+late: attack the length of the swell, sustain one, and a decay of ten
+milliseconds that does nothing at all because the sustain is one. Refinement
+then searched the sustain, pulled it to 0.68, and left the decay where it was —
+turning an inert placeholder into a three-decibel cliff a hundredth of a second
+wide. Smoothed of its tremolo, the note went from −0.02 dB at 600 ms to −2.75 at
+800; with the sustain pinned it goes to −0.25.
+
+So the sustain of an oscillator envelope is no longer searched. It is structure:
+one for a body that has to stay, zero for a transient that has to go. What
+happens *after* the note has arrived belongs to the amplitude envelope, and two
+envelopes shaping one decay is the mistake
+[the first transient](#the-transient-role-and-why-the-noise-does-not-get-its-own-envelope)
+made in a different costume.
+
+Worth noting how it was found. Eleven diagnostic axes said the patch was fine —
+`sustain vs peak` reads ok on it, because it compares a median against a peak
+and a cliff in between changes neither. A listener heard it immediately and
+named the modulation. That is the third fault this month that no axis here
+could see, after the level and the tail.
+
+**The violin drops too, and for a different reason.** It takes no transient, so
+it has no oscillator envelope and none of the above applies to it. Smoothed of
+its tremolo, its fit peaks at 500 ms and falls to −5.6 dB by a second, while the
+recording keeps swelling to its own peak at 1.2 s and holds there.
+
+That fall is the amplitude envelope's decay, which refinement shortened from the
+1.43 s analysis measured to 0.227 s — and before this month's changes it sat at
+4.0 s, so it is new. Scoring one fitted patch at four decay times says why:
+
+| decay | spectral | loudness | drift | level |
+|---|---|---|---|---|
+| 0.23 s | 1.639 | **9.75** | 2.02 | **1.05** |
+| 1.43 s | 1.622 | 9.98 | 1.82 | 1.65 |
+| 4.00 s | 1.625 | 10.99 | 1.71 | 3.99 |
+
+`loudness` and `level` buy the short decay; `spectral` and `drift` pay for it.
+Which is the reverb's failure exactly — a parameter being used as a volume
+control — one level along: the body is too loud against the target, and
+shortening the decay is cheaper than lowering the master because the master
+would take the peak down with it.
+
+And the reason the body is too loud relative to the peak is that the *rise* is
+wrong: the fit arrives 700 ms before the recording does, so its early frames are
+too quiet and its late ones too loud, and the objective buys the contrast
+somewhere. The violin misses the transient ladder's margin by three points.
+Closing that gap is the fix for this, not a constraint on the decay.
+
 ### Traps found along the way
 
 - **Absolute cutoff is not identifiable.** Source spectrum times filter

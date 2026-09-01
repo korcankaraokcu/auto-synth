@@ -136,4 +136,25 @@ TEST_CASE ("refinement searches only what the deliverable can carry", "[capabili
     CHECK_FALSE (has ("oscs.0.reverb_send"));
     CHECK_FALSE (has ("oscs.0.filter.cutoff_hz"));
     CHECK_FALSE (has ("oscs.0.frame_position"));
+
+    // And an oscillator envelope's sustain, which is structure rather than a
+    // value to polish: one for a body that has to stay, zero for a transient
+    // that has to go. Searched, it turned the body's placeholder decay into a
+    // cliff -- sustain pulled to 0.68 with the decay left at ten milliseconds,
+    // three decibels gone in a tenth of a blink. A listener reported that
+    // before any axis here did, which is the second time an oscillator envelope
+    // has been given freedom it did not need and spent it badly.
+    auto shaped = simplePatch (Waveform::saw);
+    shaped.oscs[0].envEnabled = true;
+    const auto envScope = Refine::scopeFor (shaped);
+    const auto hasEnv = [&envScope] (const std::string& needle)
+    {
+        for (const auto& p : envScope)
+            if (p == needle)
+                return true;
+        return false;
+    };
+    CHECK (hasEnv ("oscs.0.env.attack"));
+    CHECK (hasEnv ("oscs.0.env.decay"));
+    CHECK_FALSE (hasEnv ("oscs.0.env.sustain"));
 }

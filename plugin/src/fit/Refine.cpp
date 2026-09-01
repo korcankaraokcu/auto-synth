@@ -611,8 +611,17 @@ std::vector<std::string> Refine::scopeFor (const Patch& patch)
         // structure with a distance metric, which is the split this project
         // keeps: analysis owns what was measured, refinement owns precision.
         // It is the same reason the LFO rate is not in this list.
+        // Not the sustain. An oscillator envelope exists here to say *when* its
+        // source arrives -- one for the body, zero for the transient -- and
+        // that is structure, not a value to polish. Searched, it turned the
+        // body's placeholder decay into a cliff: refinement pulled the sustain
+        // to 0.68 and left the decay at ten milliseconds, so the note dropped
+        // three decibels in a tenth of a blink, which a listener reported
+        // before any axis here did. What happens after the note has arrived is
+        // the amplitude envelope's business, and two envelopes shaping one
+        // decay is the mistake the first transient made.
         if (osc.envEnabled)
-            for (const char* leaf : { "attack", "decay", "sustain", "release", "curve" })
+            for (const char* leaf : { "attack", "decay", "release", "curve" })
                 paths.push_back (p + ".env." + leaf);
     }
 
