@@ -208,7 +208,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-120 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+121 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
 `[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
@@ -2490,9 +2490,15 @@ one failure in three to two, in the other direction.
 
 Combining it with the level term was worse still: 8.66 dB of tail error, both
 changes fighting over the same decibels. The level term alone is the one that
-paid. `EffectsFit::detectReverb` fitting a decay rate to the late tail is a real
-defect, and it should be fixed when the thing it distorts is not already being
-held down by something else.
+paid.
+
+Both of those readings were wrong about where the tail came from, and
+[the reverb was a second volume control](#the-reverb-was-a-second-volume-control)
+is where it actually came from: the export let the reverb double as a gain
+stage, so refinement raised it elevenfold to bring a level down and the tail was
+the bill. Calibrating the reverb in analysis could never have held, because the
+search undoes it on the next evaluation. `EffectsFit::detectReverb` fitting a
+decay rate to the late tail is still a real defect; it is now the smaller one.
 
 What is left, and it is now the clearest fault on both samples: the fitted
 amplitude envelope is too peaky. `sustain vs peak` is the axis that survives
@@ -2617,6 +2623,58 @@ and six of them is a measurement. Kept for that, not for a better average.
 
 It costs about half again on a fit, 115 s against 65, for the extra oscillator's
 dimensions and the two renders the ladder spends deciding.
+
+### The reverb was a second volume control
+
+Reported by ear: "the clarinet has a weird bop when the note releases". The
+report was right, the cause was not where any of the previous three attempts at
+this tail had looked, and it explains all of them.
+
+**Ours is a return gain; Vital's is a crossfade.** Our `reverb.level` adds to the
+dry and leaves it alone. Vital's `reverb_dry_wet` *replaces* it — so raising the
+reverb turns the patch down, and the export never gave the difference back.
+Rendering one clarinet patch dry and wet: peak 0.444 against 0.241, the same
+patch, five decibels apart.
+
+Which makes the reverb a volume control, and an optimiser searching both will
+use it as one. Analysis measured that clarinet's return at **0.028** and
+refinement came back with **0.304** — eleven times — because drowning the note
+was the cheapest way to bring its level down. The tail it bought sat fifteen
+decibels above the recording's, still being tremoloed after the note had
+stopped, which is the bop.
+
+This is why the earlier attempt at a closed-loop reverb calibration could not
+have worked. It corrected the tail in *analysis*, and analysis was never wrong:
+the runaway is entirely in the search, and a search free to use a parameter as
+something it is not will do so again the moment the calibration finishes.
+
+**The compensation is measured, because the arithmetic overshoots.** A pure
+crossfade costs `1/(1-wet)`; the dry falls at half that in decibels, because the
+wet feeds energy back into the note while it is still sounding. Rendering one
+patch at seven return gains:
+
+| ratio | dry falls by | `1/(1-wet)` | `sqrt(1+ratio)` |
+|---|---|---|---|
+| 0.16 | 0.28 dB | 1.29 dB | 0.64 dB |
+| 0.80 | 2.20 dB | 5.11 dB | 2.55 dB |
+| 1.60 | 4.15 dB | 8.30 dB | 4.15 dB |
+| 2.40 | 5.39 dB | 10.63 dB | 5.31 dB |
+| 4.00 | 6.67 dB | 13.98 dB | 6.99 dB |
+
+So the master owes `sqrt(1 + ratio)` — exact in the middle of the range and
+within half a decibel at both ends. With it, the same sweep moves the note's
+body by at most half a decibel from dry to fully wet, where it used to lose 6.7.
+
+Mean tail error over three seeds falls from 8.85 dB to 5.38, and the clarinet's
+release now tracks the recording within about two decibels where it had been
+sixteen above it. Nine of the eleven diagnostic axes read ok, including
+`note-off`, `onset at 50 ms` and a brightness within one hertz of the target.
+
+The general shape of this is worth keeping: **a control that is not what the
+other synth calls it will be found and abused by the optimiser, and the symptom
+will show up somewhere else entirely.** Three separate investigations blamed the
+tail on the reverb estimator, on the loudness term's averaging, and on the
+transient, and the fault was in the exporter the whole time.
 
 ### Traps found along the way
 

@@ -98,6 +98,24 @@ public:
         // multiplies our return gain to reach.
         static constexpr float kReverbReturnToRatio = 8.0f;
 
+        // What the master owes the dry signal at a given return ratio.
+        //
+        // Vital's reverb is a crossfade, so raising it takes the dry away where
+        // ours leaves the dry alone and adds to it. Uncompensated that makes
+        // the reverb a second volume control, and an optimiser allowed to
+        // search both will reach for it: a clarinet whose return analysis
+        // measured at 0.028 came back from refinement at 0.304, because
+        // drowning the note was the cheapest way to bring its level down.
+        //
+        // Measured rather than derived. A pure crossfade would cost 1/(1-wet);
+        // the dry falls at half that in decibels, because the wet feeds energy
+        // back into the note while it is still sounding. Rendering one patch at
+        // seven return gains gives 0.28, 0.97, 2.20, 4.15, 5.39 and 6.67 dB
+        // against a square root's 0.64, 1.46, 2.55, 4.15, 5.31 and 6.99 --
+        // within half a decibel everywhere, and exact in the middle where the
+        // fits actually sit.
+        static float dryLossForRatio (float ratio) noexcept;
+
         // Vital's reverb rings about twice as long as the decay time it is
         // given, so the time it is given is half the one that was fitted.
         //

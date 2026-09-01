@@ -300,6 +300,44 @@ TEST_CASE ("measured mappings, not assumed ones", "[vital]")
     CHECK (M::levelToOscLevel (0.25f) == Catch::Approx (0.5f).margin (0.001));
 }
 
+TEST_CASE ("the reverb is not a second volume control", "[vital]")
+{
+    // Vital's reverb is a crossfade and ours is a return gain added to the dry,
+    // so raising ours takes the dry away over there unless the master gives it
+    // back. Left uncompensated the reverb doubles as a volume control, and an
+    // optimiser allowed to search both will use it as one: on a clarinet,
+    // analysis measured a return of 0.028 and refinement came back with 0.304,
+    // because drowning the note was the cheapest way to bring its level down.
+    // What that bought in level it paid for in a tail fifteen decibels above
+    // the recording's, which is what a listener called a thump at the end.
+    using M = VitalExport::Mapping;
+
+    auto dry = simplePatch (Waveform::saw);
+    dry.masterLevel = 0.5f;
+
+    auto wet = dry;
+    wet.reverb = { true, 0.5f, 0.5f, 0.25f };
+
+    const auto dryVolume = (float) settingsOf (dry).getProperty ("volume", 0.0);
+    const auto wetVolume = (float) settingsOf (wet).getProperty ("volume", 0.0);
+
+    // The wet patch asks for more master, by the amount the crossfade takes.
+    INFO ("dry volume " << dryVolume << " wet volume " << wetVolume);
+    CHECK (wetVolume > dryVolume);
+
+    // And by the measured amount rather than a crossfade's arithmetic. A pure
+    // crossfade would cost 1/(1-wet); the dry falls at half that in decibels
+    // because the wet feeds energy back while the note is still sounding, so
+    // the compensation is the square root and undoing the whole crossfade
+    // overshoots -- which is how this was got wrong the first time.
+    const auto ratio = M::kReverbReturnToRatio * 0.25f;
+    CHECK (M::dryLossForRatio (ratio) == Catch::Approx (std::sqrt (1.0f + ratio)));
+    CHECK (M::dryLossForRatio (ratio) < 1.0f + ratio);
+
+    // A patch with no reverb is untouched by any of it.
+    CHECK (M::dryLossForRatio (0.0f) == Catch::Approx (1.0f));
+}
+
 TEST_CASE ("the master ceiling is the one the preset can carry", "[vital]")
 {
     // A patch is allowed a gain above one because the chain below it

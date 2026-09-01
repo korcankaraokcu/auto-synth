@@ -295,6 +295,11 @@ float VitalExport::Mapping::hzToLfoRate (float hz) noexcept
     return juce::jlimit (-7.0f, 9.0f, std::log2 (juce::jmax (hz, 1.0e-3f)));
 }
 
+float VitalExport::Mapping::dryLossForRatio (float ratio) noexcept
+{
+    return std::sqrt (1.0f + juce::jmax (0.0f, ratio));
+}
+
 float VitalExport::Mapping::gainToVolume (float linearGain) noexcept
 {
     if (linearGain <= 1.0e-5f)
@@ -364,6 +369,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
     // engine's reverb *send* with Vital's dry/wet means giving the master back
     // whatever the crossfade took off the dry.
     auto reverbWet = 0.0f;
+    auto reverbDryLoss = 1.0f;
 
     settings->setProperty ("polyphony", 8);
     settings->setProperty ("voice_transpose", 0);
@@ -661,6 +667,7 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         const auto ratio = juce::jlimit (0.0f, 9.0f,
                                          Mapping::kReverbReturnToRatio * patch.reverb.level);
         reverbWet = ratio / (1.0f + ratio);
+        reverbDryLoss = Mapping::dryLossForRatio (ratio);
         settings->setProperty ("reverb_dry_wet", juce::jlimit (0.0f, 1.0f, reverbWet));
 
         const auto rt60 = Reverb::rt60ForSize (patch.reverb.size)
@@ -700,13 +707,19 @@ juce::String VitalExport::toJson (const Patch& patch, const juce::String& preset
         settings->setProperty ("reverb_chorus_amount", 0.0f);
     }
 
-    // Written here rather than at the top only because the reverb decides how
-    // much of the dry Vital keeps. At these mix levels the crossfade takes
-    // well under a decibel, and compensating for it was measured to overshoot:
-    // Vital's dry falls far more slowly than `1 - wet`, so undoing that much
-    // put the whole patch several decibels over the level it was fitted at.
+    // Written here rather than at the top because the reverb decides how much of
+    // the dry Vital keeps, and the master has to give it back.
+    //
+    // Ours is a return gain added to the dry; Vital's is a crossfade that takes
+    // the dry away. Left uncompensated the reverb is also a volume control, and
+    // an optimiser free to search both will use it as one: on a clarinet,
+    // analysis measured a return of 0.028 and refinement raised it to 0.304 --
+    // eleven times -- because that was the cheapest way to bring the level
+    // down. What it bought in level it paid for in a tail fifteen decibels
+    // above the recording's, which is audible as a thump when the note stops.
     settings->setProperty ("volume",
-                           Mapping::gainToVolume (patch.masterLevel / (levelScale * levelScale)));
+                           Mapping::gainToVolume (patch.masterLevel * reverbDryLoss
+                                                  / (levelScale * levelScale)));
 
     // The delay, which had been dropped as silently as the reverb was.
     //
