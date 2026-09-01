@@ -30,7 +30,8 @@ const std::map<std::string, double> kFloors {
     // distances, so their floors are the tolerance below which the diagnostic
     // would call them equal: 30 ms of attack, and a decibel of movement.
     { "attack", 0.030 }, { "drift", 1.00 }, { "wobble", 0.50 },
-    // A twelfth of full scale: below that, two onsets sound like each other.
+    // A twelfth of full scale, averaged over the six points of the rise: below
+    // that, two attacks sound like each other.
     { "onset", 0.08 }
 };
 
@@ -171,11 +172,16 @@ double harmonicDriftDb (const Stft::Result& spectrogram, double f0)
     return drift / (double) early.size();
 }
 
+// Where the rise is sampled, in seconds. The same points `autosynth_diff`
+// prints and `PartialFit::addTransient` decides on, so the objective, the
+// report and the analysis all mean the same thing by "the rise".
+constexpr double kRiseSeconds[] = { 0.010, 0.025, 0.050, 0.100, 0.200, 0.400 };
+
 struct Contour
 {
     double attackSeconds = 0.0;
     double wobbleDb = 0.0;
-    double onset = 0.0;
+    std::array<double, std::size (kRiseSeconds)> rise {};
 };
 
 Contour contourOf (const float* samples, int numSamples, double sampleRate, double gate)
@@ -192,16 +198,25 @@ Contour contourOf (const float* samples, int numSamples, double sampleRate, doub
 
     out.attackSeconds = EnvelopeFit::attackSeconds (env, times);
 
-    // How much of the note is there a twentieth of a second in, against the
+    // How much of the note is there at six points during the rise, against the
     // loudest it ever gets. Attack *time* is the moment a threshold is crossed
     // and says nothing about the shape of the rise, so an onset that fades in
     // and one that arrives can measure the same -- which is how an envelope came
     // to be described as too slow while its attack read fine.
+    //
+    // Six points rather than one, because one cannot tell a rise that is late
+    // from a rise that is the wrong shape. Scored at fifty milliseconds alone,
+    // a transient that peaks at ten and has collapsed by a hundred reads as a
+    // good fit; it does not sound like one, and the recording it is imitating
+    // peaks at fifty.
     {
         const auto loudest = *std::max_element (env.begin(), env.end());
-        const auto at = static_cast<size_t> (0.05 * fps);
-        if (loudest > 1.0e-9f && at < env.size())
-            out.onset = env[at] / loudest;
+        if (loudest > 1.0e-9f)
+            for (size_t i = 0; i < out.rise.size(); ++i)
+            {
+                const auto at = static_cast<size_t> (kRiseSeconds[i] * fps);
+                out.rise[i] = at < env.size() ? env[at] / loudest : 1.0;
+            }
     }
 
     // Wobble as the rms deviation of the sustained middle in decibels, measured
@@ -243,7 +258,7 @@ struct TargetFeatures
     double attackSeconds = 0.0;
     double driftDb = 0.0;
     double wobbleDb = 0.0;
-    double onset = 0.0;
+    std::array<double, std::size (kRiseSeconds)> rise {};
 
     TargetFeatures (const float* samples, int numSamples, double sampleRate,
                     double gate, double f0)
@@ -263,7 +278,7 @@ struct TargetFeatures
         const auto contour = contourOf (samples, numSamples, sampleRate, gate);
         attackSeconds = contour.attackSeconds;
         wobbleDb = contour.wobbleDb;
-        onset = contour.onset;
+        rise = contour.rise;
         driftDb = harmonicDriftDb (spectrograms.back(), f0);
     }
 };
@@ -324,7 +339,9 @@ Refine::Loss lossComponents (const TargetFeatures& target, const float* samples,
     const auto contour = contourOf (samples, numSamples, sampleRate, gate);
     loss.attack = std::abs (contour.attackSeconds - target.attackSeconds);
     loss.wobble = std::abs (contour.wobbleDb - target.wobbleDb);
-    loss.onset = std::abs (contour.onset - target.onset);
+    for (size_t i = 0; i < contour.rise.size(); ++i)
+        loss.onset += std::abs (contour.rise[i] - target.rise[i]);
+    loss.onset /= static_cast<double> (contour.rise.size());
     loss.drift = std::abs (harmonicDriftDb (spectrogram, f0) - target.driftDb);
 
     return loss;

@@ -208,7 +208,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 .\plugin\build\autosynth_tests_artefacts\Release\autosynth_tests.exe "[.report]"
 ```
 
-118 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
+120 cases. Tags: `[ir]`, `[analysis]`, `[fit]`, `[capabilities]`, `[recovery]`,
 `[unison]`, `[wavetable]`, `[vital]`, `[golden]`.
 
 Tests tagged `[.slow]` are hidden by default and run only when asked for by
@@ -1935,6 +1935,12 @@ IR has no transient generator, and bolting the job onto the noise source, which
 is flat and static, only spreads the error around. The next attempt should add
 the generator first and fit it second.
 
+**It was, and it worked** — see
+[A transient that earns its slot](#a-transient-that-earns-its-slot). The
+generator turned out to be already there: an oscillator with its own envelope,
+which the IR and the export both carried and analysis never used. What that
+attempt was missing was not the generator but the rule for when to spend one.
+
 ### Three things a listener heard that no metric did
 
 A musician listening to the fits reported two faults in one sentence: the
@@ -2545,6 +2551,73 @@ again, which was built once and made things worse in every direction, so it
 needs a parsimony rule of the same kind as the wavetable ladder before it is
 worth a second attempt.
 
+### A transient that earns its slot
+
+The rise needs two shapes and an ADSR attack is one, so the fit gets a second
+source: the loudest oscillator copied into a free slot, arriving at once and
+gone before the body has finished arriving. `PartialFit::addTransient`.
+
+**The amplitude envelope takes the fast half.** This is the part the earlier
+attempt could not have got right, whatever it had bolted the envelope onto: the
+amplitude envelope multiplies everything, so a fast source behind a slow master
+still arrives slowly. The master takes the chiff and the oscillators take the
+swell — the body through its own envelope, the transient through one that decays
+to nothing.
+
+**It is decided on the render, not on a rule of thumb.** The rise has to be
+wrong by more than an absolute floor to begin with, and adding the transient has
+to close a fifth of that gap, or the patch is returned untouched. Both halves
+are pinned by name — `a transient is declined when one envelope already fits`
+and `a transient is taken when the rise needs two shapes` — because the failure
+mode of the first attempt was precisely a modulator that switched itself on for
+material that never needed one.
+
+**And it is last.** Proposed before the level solve it would be a second column
+indistinguishable from the source it was copied from: the two differ in *time*
+and the solve compares spectra, so the split between them would be decided by
+rounding.
+
+Measured on the clarinet, summed over the six points of the rise:
+
+| | 10ms | 25ms | 50ms | 100ms | 200ms | 400ms | error |
+|---|---|---|---|---|---|---|---|
+| target | 0.23 | 0.35 | 0.45 | 0.41 | 0.59 | 0.97 | |
+| before | 0.01 | 0.04 | 0.08 | 0.21 | 0.50 | 0.82 | 1.34 |
+| after | 0.44 | 0.43 | 0.47 | 0.50 | 0.55 | 1.00 | 0.47 |
+
+Across three seeds the error lands at 0.45 to 0.58 against 1.34, so it is the
+model and not the draw. Brightness and noisiness come into tolerance with it,
+and `onset at 50 ms` — one sample of that rise — goes from 0.36 out to 0.22.
+
+**The violin declines it, narrowly, and that is the ladder working.** Its rise
+error goes 0.994 to 0.826 with a transient: a seventeen per cent improvement
+against a margin of twenty, so the slot is not spent. The number is recorded
+rather than the margin adjusted, because a bound moved to admit the sample in
+front of you has stopped being a bound — and it means a later improvement to the
+transient's starting values has something to clear. Its rise still shows the
+same fault, 0.01 against 0.13 ten milliseconds in.
+
+**The objective scores the whole rise now, not one point of it.** With one
+source there was nothing a single sample at fifty milliseconds could mislead;
+with two there is, and it did — scored at that one point, a transient that
+peaked at ten milliseconds and had collapsed by a hundred read as a good fit.
+Six points, the same ones the diagnostic prints.
+
+What that bought is not accuracy but *repeatability*, which is worth writing
+down because it is not what was expected. Over three seeds each:
+
+| | clarinet | violin |
+|---|---|---|
+| scored at 50 ms | 0.60, 0.49, 0.48 | 0.60, 0.87, 1.00 |
+| scored over six points | 0.58, 0.47, 0.45 | 0.90, 0.86, 0.88 |
+
+The means are the same to within a hundredth. The violin's spread falls from
+0.40 to 0.04 — one sample of a shape is a lottery the search can win or lose,
+and six of them is a measurement. Kept for that, not for a better average.
+
+It costs about half again on a fit, 115 s against 65, for the extra oscillator's
+dimensions and the two renders the ladder spends deciding.
+
 ### Traps found along the way
 
 - **Absolute cutoff is not identifiable.** Source spectrum times filter
@@ -2754,8 +2827,15 @@ waits until after the exporter.
   and an ADSR attack is, so the onset cannot be bought at any curve. Measured
   three ways in
   [The onset is not a knob that was set wrong](#the-onset-is-not-a-knob-that-was-set-wrong).
-  **Next:** a second source carrying the transient, which the IR and the export
-  already support and which needs a parsimony rule before it earns its slot.
+  ~~**Next:** a second source carrying the transient.~~ **Done** —
+  `PartialFit::addTransient`, see
+  [A transient that earns its slot](#a-transient-that-earns-its-slot). Summed
+  rise error on the clarinet falls from 1.34 to between 0.45 and 0.58.
+  **What is left:** the violin misses the ladder's margin by three points, and
+  the likeliest reason is that the transient is a straight copy of the source it
+  came from -- a chiff is usually brighter and noisier than the note behind it,
+  and fitting it with the note's own timbre is asking one shape to do two jobs
+  again, one level down.
 - ~~Give the attack its own curve.~~ **Done** — see
   [The attack gets its own curve](#the-attack-gets-its-own-curve). The violin's
   onset gap at 0.09 s fell from 9.3 dB to 6.3 and it now converges by 0.11 s

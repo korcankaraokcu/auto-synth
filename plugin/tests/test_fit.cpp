@@ -584,6 +584,104 @@ TEST_CASE ("the objective can see a patch that is simply quiet", "[fit]")
     CHECK (louder.level == Catch::Approx (6.0).margin (1.5));
 }
 
+// --- the transient -----------------------------------------------------------
+
+namespace
+{
+// The two-timescale shape a recording has and one ADSR does not: a fast arrival
+// that fades while a slow one swells in behind it.
+Patch twoTimescalePatch()
+{
+    auto patch = simplePatch (Waveform::saw);
+    patch.ampEnv = { 0.01f, 2.0f, 1.0f, 0.05f, 0.0f };
+
+    patch.oscs[0].envEnabled = true;
+    patch.oscs[0].env = { 0.35f, 0.01f, 1.0f, 0.05f, 0.0f };   // the swell
+
+    patch.oscs[1].enabled = true;
+    patch.oscs[1].level = 0.5f;
+    patch.oscs[1].waveform = Waveform::saw;
+    patch.oscs[1].envEnabled = true;
+    patch.oscs[1].env = { 0.01f, 0.20f, 0.0f, 0.05f, 0.0f };   // the chiff
+    return patch;
+}
+} // namespace
+
+TEST_CASE ("a transient is declined when one envelope already fits", "[fit]")
+{
+    // The guard, and the reason this feature is allowed to exist at all.
+    //
+    // The first attempt at a transient gave the noise source its own envelope
+    // unconditionally, and an ADSR cannot express "do nothing" -- a release of
+    // zero still cuts the tail -- so it changed the sound of every patch that
+    // had never needed one, and every measurement got worse at once.
+    //
+    // A single-attack recording is exactly that case: its rise is one shape,
+    // one envelope fits it, and a second source has nothing to add.
+    auto plain = simplePatch (Waveform::saw);
+    plain.ampEnv = { 0.05f, 0.2f, 0.8f, 0.1f, 0.0f };
+    const auto target = render (plain, 220.0, 2.0, 1.5);
+
+    PartialFit::Options options;
+    options.hop = kHop;
+    options.gateSeconds = 1.5;
+    options.renderer = renderer();
+    const auto fitted = PartialFit::fit (target.data(), (int) target.size(),
+                                         kSampleRate, options);
+
+    for (size_t i = 0; i < fitted.oscs.size(); ++i)
+    {
+        INFO ("osc " << i);
+        CHECK_FALSE (fitted.oscs[i].envEnabled);
+    }
+}
+
+TEST_CASE ("a transient is taken when the rise needs two shapes", "[fit]")
+{
+    // And the other half of the ladder. A rise that arrives fast and then
+    // swells cannot be had from one attack at any curve, so a slot spent on a
+    // second source is a slot that buys something.
+    const auto target = render (twoTimescalePatch(), 220.0, 2.0, 1.5);
+
+    // Start from a patch with no transient in it, so what is measured is the
+    // decision and not the analysis that led to it.
+    auto plain = simplePatch (Waveform::saw);
+    plain.ampEnv = { 0.35f, 0.5f, 0.9f, 0.05f, 0.0f };
+    plain.rootHz = 220.0f;
+
+    const auto decided = PartialFit::addTransient (plain, target.data(), (int) target.size(),
+                                                   kSampleRate, 1.5, kHop, renderer());
+
+    auto transients = 0;
+    for (const auto& osc : decided.oscs)
+        if (osc.enabled && osc.envEnabled)
+            ++transients;
+    INFO ("sources with their own envelope: " << transients);
+    CHECK (transients > 0);
+
+    // And it is closer, on the measurement the ladder is judged by.
+    const auto riseErrorOf = [&] (const Patch& p)
+    {
+        const auto a = render (p, 220.0, 2.0, 1.5);
+        const auto ea = loudnessOf (a);
+        const auto et = loudnessOf (target);
+        const auto peakA = *std::max_element (ea.begin(), ea.end());
+        const auto peakT = *std::max_element (et.begin(), et.end());
+        const double at[] = { 0.010, 0.025, 0.050, 0.100, 0.200, 0.400 };
+        double total = 0.0;
+        for (const auto seconds : at)
+        {
+            const auto i = (size_t) (seconds * kSampleRate / 256.0);
+            if (i < ea.size() && i < et.size() && peakA > 0.0f && peakT > 0.0f)
+                total += std::abs (ea[i] / peakA - et[i] / peakT);
+        }
+        return total;
+    };
+
+    INFO ("rise error " << riseErrorOf (decided) << " against " << riseErrorOf (plain));
+    CHECK (riseErrorOf (decided) < riseErrorOf (plain));
+}
+
 TEST_CASE ("the master is not clamped to one", "[fit]")
 {
     // Every axis but one in the diagnostic is shape-relative, so a fit that is

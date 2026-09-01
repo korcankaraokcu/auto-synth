@@ -406,6 +406,153 @@ Patch PartialFit::calibrateLevels (Patch patch, const float* target, int numSamp
     return patch;
 }
 
+namespace
+{
+
+// Where the rise is sampled, in seconds after the note starts. The same points
+// `autosynth_diff` prints, so a decision taken here is one a reader can check
+// against the report.
+constexpr double kRiseSeconds[] = { 0.010, 0.025, 0.050, 0.100, 0.200, 0.400 };
+
+using Rise = std::array<double, std::size (kRiseSeconds)>;
+
+// The shape of the rise, as a fraction of the loudest frame.
+Rise riseOf (const float* samples, int numSamples, double sampleRate, int hop)
+{
+    Rise out {};
+    const auto envelope = Stft::loudnessEnvelope (samples, numSamples, hop);
+    if (envelope.empty())
+        return out;
+
+    const auto loudest = *std::max_element (envelope.begin(), envelope.end());
+    if (loudest <= 1.0e-9f)
+        return out;
+
+    const auto fps = sampleRate / hop;
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+        const auto frame = static_cast<size_t> (kRiseSeconds[i] * fps);
+        out[i] = frame < envelope.size() ? envelope[frame] / loudest : 1.0;
+    }
+    return out;
+}
+
+double riseError (const Rise& a, const Rise& b)
+{
+    double total = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        total += std::abs (a[i] - b[i]);
+    return total;
+}
+
+// How long the note takes to reach most of the way to its early level.
+//
+// Not the attack time: the attack is where the note arrives at its *peak*, and
+// on material with a transient that is a quarter of a second away while the
+// chiff is over in twenty milliseconds. This is the second time constant, the
+// one an ADSR has nowhere to put.
+double chiffSeconds (const Rise& rise, double fallback)
+{
+    constexpr double kShare = 0.63;   // one time constant
+    const auto early = rise[3];       // the level at a tenth of a second
+    if (early <= 1.0e-3)
+        return fallback;
+
+    const auto wanted = kShare * early;
+    for (size_t i = 0; i < rise.size(); ++i)
+        if (rise[i] >= wanted)
+            return kRiseSeconds[i];
+
+    return fallback;
+}
+
+} // namespace
+
+Patch PartialFit::addTransient (Patch patch, const float* target, int numSamples,
+                                double sampleRate, double gateSeconds, int hop,
+                                const Renderer& renderer)
+{
+    if (! renderer || numSamples <= 0)
+        return patch;
+
+    // A free slot, and something to copy into it.
+    int loudest = -1;
+    int free = -1;
+    for (int i = 0; i < kNumOsc; ++i)
+    {
+        const auto& osc = patch.oscs[static_cast<size_t> (i)];
+        if (osc.enabled && osc.level > 1.0e-4f)
+        {
+            if (loudest < 0 || osc.level > patch.oscs[static_cast<size_t> (loudest)].level)
+                loudest = i;
+        }
+        else if (free < 0)
+        {
+            free = i;
+        }
+    }
+    if (loudest < 0 || free < 0)
+        return patch;
+
+    const auto duration = numSamples / sampleRate;
+    const auto wanted = riseOf (target, numSamples, sampleRate, hop);
+
+    const auto plain = renderer (patch, duration, gateSeconds);
+    const auto before = riseError (wanted, riseOf (plain.data(), static_cast<int> (plain.size()),
+                                                   sampleRate, hop));
+
+    // The absolute floor of the ladder. A rise already within this of the
+    // recording is one an oscillator slot cannot improve on, and spending a
+    // slot to not improve it is how a patch stops being readable.
+    constexpr double kFloor = 0.25;
+    if (before <= kFloor)
+        return patch;
+
+    const auto chiff = juce::jlimit (0.005, 0.060,
+                                     chiffSeconds (wanted, patch.ampEnv.attack));
+
+    // The amplitude envelope takes the fast half and the oscillators take the
+    // slow one, because the amplitude envelope multiplies everything: a fast
+    // source behind a slow master arrives slowly however fast its own envelope
+    // is, which is why bolting a transient onto a *source* alone does nothing.
+    auto candidate = patch;
+    const auto swell = juce::jmax (0.0f, patch.ampEnv.attack - static_cast<float> (chiff));
+
+    candidate.ampEnv.attack = static_cast<float> (chiff);
+    candidate.ampEnv.attackCurve = 0.0f;
+
+    auto& body = candidate.oscs[static_cast<size_t> (loudest)];
+    body.envEnabled = true;
+    body.env = { swell, 0.01f, 1.0f, 0.05f, 0.0f };
+    body.env.attackCurve = patch.ampEnv.attackCurve;
+
+    // The transient: the same source, arriving at once and gone before the body
+    // has finished arriving. Level from the recording's own early rise, so the
+    // starting point is a measurement rather than a guess for the optimiser to
+    // walk away from.
+    auto& transient = candidate.oscs[static_cast<size_t> (free)];
+    transient = body;
+    transient.envEnabled = true;
+    transient.env = { static_cast<float> (chiff * 0.3), 0.20f, 0.0f, 0.05f, 0.0f };
+    transient.level = juce::jlimit (0.02f, 1.0f, static_cast<float> (wanted[0]));
+
+    const auto rendered = renderer (candidate, duration, gateSeconds);
+    const auto after = riseError (wanted, riseOf (rendered.data(),
+                                                  static_cast<int> (rendered.size()),
+                                                  sampleRate, hop));
+
+    // And the relative margin. A costlier model has to beat the simpler one by
+    // enough that the difference is the model and not the render, which is the
+    // same rule the wavetable ladder is built on -- and the rule the first
+    // attempt at a transient did not have, which is why it shipped a change
+    // that made every measurement worse at once.
+    constexpr double kMargin = 0.80;
+    if (after > before * kMargin)
+        return patch;
+
+    return candidate;
+}
+
 Patch PartialFit::calibrateNoise (Patch patch, const float* target, int numSamples,
                                   double sampleRate, double gateSeconds, float ceiling,
                                   const Renderer& renderer)
@@ -834,8 +981,16 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
                        * static_cast<float> (juce::jlimit (0.0, 1.0, share / kFullNoiseShare));
     auto calibrated = calibrateLevels (patch, samples, numSamples, sampleRate, gateTime,
                                        options.renderer, ceiling);
-    return calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate,
-                           gateTime, static_cast<float> (ceiling), options.renderer);
+    calibrated = calibrateNoise (std::move (calibrated), samples, numSamples, sampleRate,
+                                 gateTime, static_cast<float> (ceiling), options.renderer);
+
+    // The transient last, and measured against the finished patch. Proposed
+    // earlier it would be a second column in the level solve, indistinguishable
+    // from the source it was copied from -- the two differ in time and the
+    // solve compares spectra -- and the split between them would be decided by
+    // rounding.
+    return addTransient (std::move (calibrated), samples, numSamples, sampleRate,
+                         gateTime, options.hop, options.renderer);
 }
 
 } // namespace autosynth

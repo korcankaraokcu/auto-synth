@@ -99,7 +99,7 @@ public:
         double attack = 0.0;    // seconds away from the target's attack
         double drift = 0.0;     // decibels away from its harmonic movement
         double wobble = 0.0;    // decibels away from its wobble depth
-        double onset = 0.0;     // how far off the level fifty milliseconds in
+        double onset = 0.0;     // how far off the shape of the rise is
         double level = 0.0;     // decibels away from the note's own loudness
     };
 

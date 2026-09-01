@@ -82,6 +82,31 @@ public:
     static Patch calibrateNoise (Patch patch, const float* target, int numSamples,
                                  double sampleRate, double gateSeconds, float ceiling,
                                  const Renderer& renderer);
+
+    // A second source carrying the attack transient, when one earns its slot.
+    //
+    // A recording's rise is not one shape. A clarinet reaches 0.45 of its peak
+    // inside fifty milliseconds, settles back to 0.41 by a hundred, and only
+    // then swells to full over the next third of a second -- and an ADSR attack
+    // is monotonic by construction, so a fit can have the chiff or the swell
+    // and not both. At the fitted attack of half a second, and with Vital
+    // squaring the envelope, the level ten milliseconds in comes out at 0.02
+    // against a recording's 0.23; reaching that needs a curve near 33, which no
+    // preset can hold.
+    //
+    // So the shape needs two sources, which is what an oscillator with its own
+    // envelope is for. The amplitude envelope takes the fast half and the
+    // oscillators take the slow one -- it multiplies everything, so a fast
+    // source behind a slow master still arrives slowly, which is why the first
+    // attempt at this, bolted onto the noise source, could not have worked.
+    //
+    // Kept only when it earns the slot, measured on the render: the rise has to
+    // be wrong by more than a floor to begin with, and the transient has to
+    // close a fifth of that gap. The first attempt had no such rule and made
+    // every measurement worse at once.
+    static Patch addTransient (Patch patch, const float* target, int numSamples,
+                               double sampleRate, double gateSeconds, int hop,
+                               const Renderer& renderer);
 };
 
 } // namespace autosynth
