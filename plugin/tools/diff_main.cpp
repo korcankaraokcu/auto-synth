@@ -101,6 +101,13 @@ std::vector<float> readMono (const juce::File& file, double& sampleRateOut)
 
 // --- the measurements ------------------------------------------------------
 
+// Where the rise is sampled, in milliseconds after the note starts.
+//
+// Spread over the range an attack occupies rather than evenly, because the
+// interesting part is the first tenth of a second: an instrument that chiffs
+// does most of its work there and an envelope that ramps does almost none.
+constexpr double kRiseMilliseconds[] = { 10.0, 25.0, 50.0, 100.0, 200.0, 400.0 };
+
 struct Measurements
 {
     double f0 = 0.0;
@@ -132,6 +139,8 @@ struct Measurements
     // rise, so an onset that fades in and one that arrives can measure the
     // same. A listener called an envelope too slow while the attack read `ok`.
     double onsetAt50ms = 0.0;
+    // The shape of the rise, sampled, as a fraction of the loudest frame.
+    std::vector<double> rise;
     // How much the harmonic profile moves between the first and last thirds of
     // the note, in dB. A static oscillator scores near zero however wrong its
     // tone is, so this is a separate question from the profile itself.
@@ -344,6 +353,18 @@ Measurements measure (const std::vector<float>& x, double sampleRate, int hop, i
         const auto at = static_cast<size_t> (0.05 * fps);
         if (loudestFrame > 1.0e-9f && at < loudness.size())
             m.onsetAt50ms = loudness[at] / loudestFrame;
+
+        // And the rest of the rise, because one point cannot say what shape it
+        // is. An attack that is late at fifty milliseconds and an attack that
+        // is the wrong *shape* report the same single number, and only one of
+        // them can be fixed by turning a curve up.
+        for (const auto ms : kRiseMilliseconds)
+        {
+            const auto frame = static_cast<size_t> (ms / 1000.0 * fps);
+            m.rise.push_back (loudestFrame > 1.0e-9f && frame < loudness.size()
+                                  ? loudness[frame] / loudestFrame
+                                  : 0.0);
+        }
     }
 
     const auto pitch = autosynth::Yin::track (x.data(), n, sampleRate, hop);
@@ -504,6 +525,30 @@ int main (int argc, char* argv[])
           verdictFor (20.0 * std::log10 (std::max (a.peak, 1.0e-6)),
                       20.0 * std::log10 (std::max (b.peak, 1.0e-6)), 2.0,
                       "quiet", "loud", " dB"));
+
+    // The shape of the rise, which is what a single onset number cannot show.
+    //
+    // A clarinet reaches 0.44 of its peak inside fifty milliseconds, settles
+    // back to 0.38 by a hundred and fifty, and only then swells to full over
+    // the next quarter second. No ADSR attack does that at any curve: the shape
+    // is monotonic by construction, so a fit can match the chiff or the swell
+    // and not both. Printed because the alternative is believing the onset is
+    // a knob that was set wrong.
+    if (a.rise.size() == std::size (kRiseMilliseconds)
+        && b.rise.size() == std::size (kRiseMilliseconds))
+    {
+        std::printf ("\n  the rise (fraction of the loudest frame)\n");
+        std::printf ("  %-10s", "at");
+        for (const auto ms : kRiseMilliseconds)
+            std::printf ("%7s", (juce::String ((int) ms) + "ms").toRawUTF8());
+        std::printf ("\n  %-10s", "target");
+        for (const auto v : a.rise)
+            std::printf ("%7.2f", v);
+        std::printf ("\n  %-10s", "fit");
+        for (const auto v : b.rise)
+            std::printf ("%7.2f", v);
+        std::printf ("\n");
+    }
 
     // The harmonic profile, which is where "the tone is wrong" actually lives.
     const auto harmonics = std::min<size_t> (8, std::min (a.profile.size(), b.profile.size()));

@@ -32,9 +32,9 @@ constexpr float kMaxMasterLevel = 4.0f;
 
 // `noise` is a generator like the rest, not a special case bolted on beside
 // them. Selecting it gives the oscillator's noise everything an oscillator
-// already has -- its own level, envelope, filter and reverb send -- which is
-// exactly what the global noise bed lacks and what two failed attempts to bolt
-// an envelope onto that bed were reaching for.
+// already has -- its own level, tuning and envelope -- which is exactly what
+// the global noise bed lacks and what two failed attempts to bolt an envelope
+// onto that bed were reaching for.
 enum class Waveform { sine, triangle, saw, square, pulse, noise };
 enum class FilterType { off, lowpass, highpass, bandpass };
 enum class LfoShape { sine, triangle, saw, square };

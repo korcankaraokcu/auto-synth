@@ -2492,6 +2492,59 @@ What is left, and it is now the clearest fault on both samples: the fitted
 amplitude envelope is too peaky. `sustain vs peak` is the axis that survives
 every one of these changes, and the onset is out on every seed of both samples.
 
+### The onset is not a knob that was set wrong
+
+`onset at 50 ms` is out on every seed of both samples and has been since it was
+added. The obvious reading is that the attack curve is fitted too gently, and
+that reading is wrong in three separate ways, each of which had to be measured
+before the next one was visible.
+
+**The search range was not the constraint.** It stops at 8 where the export
+carries 17.5 — Vital's envelope powers end at 20 and 2.5 of that is spent
+undoing the squaring — so widening it looked like the master-ceiling fix all
+over again. It is not: fitted curves land between 0.0 and 3.5, nowhere near
+either ceiling, and widening the range moved the onset by less than the spread
+between seeds. Reverted, because a range nothing reaches is a range whose only
+effect is to coarsen the search along that axis.
+
+**Analysis is not picking gently; it is picking correctly.** `fitAttackCurve` is
+a real grid search over eight candidates and it chooses 1.0 for the clarinet.
+Refinement, free to move it, agrees. Both are right, because 1.0 is the best
+single shape available for a rise that is not one shape.
+
+**The rise is not monotonic, and an ADSR attack is.** This is the whole of it,
+and `autosynth_diff` now prints it rather than leaving it to a bespoke script:
+
+```
+  the rise (fraction of the loudest frame)
+  at           10ms   25ms   50ms  100ms  200ms  400ms
+  target       0.23   0.35   0.45   0.41   0.59   0.97
+  fit          0.01   0.04   0.08   0.21   0.50   0.82
+```
+
+The clarinet reaches 0.45 inside fifty milliseconds, settles *back* to 0.41 by a
+hundred, and only then swells to full over the next third of a second. No attack
+shape does that at any curve: it is monotonic by construction, so a fit can have
+the chiff or the swell and not both. The violin is the same story without the
+dip — 0.13 at ten milliseconds against a fit's 0.01.
+
+The arithmetic says the same thing. With the fitted attack of 0.49 s, ten
+milliseconds is two per cent of the way in, and Vital squares the envelope: even
+at the export's ceiling the rendered level there is 0.02 against a recording's
+0.23. Reaching it needs a curve near 33, which no preset can hold. Buying it by
+shortening the attack instead works and costs the swell — by hand, a curve of 16
+takes the onset to 0.49 and the attack time to 0.133 s against a target of
+0.337.
+
+So it is a modelling gap and not a fitting error, and the shape of the fix is
+already in the IR: two sources summing, one with a fast attack and one with a
+slow one, which is what `Oscillator::envEnabled` and its own `env` are for and
+what the export already carries on env_4 to env_6. `PartialFit` never enables
+them. Doing so is [the transient role](#the-transient-role-and-why-the-noise-does-not-get-its-own-envelope)
+again, which was built once and made things worse in every direction, so it
+needs a parsimony rule of the same kind as the wavetable ladder before it is
+worth a second attempt.
+
 ### Traps found along the way
 
 - **Absolute cutoff is not identifiable.** Source spectrum times filter
@@ -2696,10 +2749,13 @@ waits until after the exporter.
   [Wavetables, and the ladder that keeps them honest](#wavetables-and-the-ladder-that-keeps-them-honest).
 - ~~Attack.~~ **Mostly done** — see
   [Attack: a parameter is not a measurement](#attack-a-parameter-is-not-a-measurement).
-  The clarinet now lands on its target; the violin is still 0.10 s short and the
-  cause is *not* the envelope, which measures back correctly on its own. Ruled
-  out by measurement: the amp LFO, the filter envelope and the reverb each move
-  it by less than 10 ms.
+  Attack *time* now lands on both samples. What remains is the attack's
+  **shape**, and it is not a fitting error: a recording's rise is not monotonic
+  and an ADSR attack is, so the onset cannot be bought at any curve. Measured
+  three ways in
+  [The onset is not a knob that was set wrong](#the-onset-is-not-a-knob-that-was-set-wrong).
+  **Next:** a second source carrying the transient, which the IR and the export
+  already support and which needs a parsimony rule before it earns its slot.
 - ~~Give the attack its own curve.~~ **Done** — see
   [The attack gets its own curve](#the-attack-gets-its-own-curve). The violin's
   onset gap at 0.09 s fell from 9.3 dB to 6.3 and it now converges by 0.11 s
