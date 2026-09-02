@@ -758,8 +758,13 @@ TEST_CASE ("a transient is taken when the rise needs two shapes", "[fit]")
         return total;
     };
 
-    INFO ("rise error " << riseErrorOf (decided) << " against " << riseErrorOf (plain));
-    CHECK (riseErrorOf (decided) < riseErrorOf (plain));
+    // Rendered once each and held, rather than measured inside the assertion.
+    // Written the other way this rendered four times, and the value the message
+    // printed was not the value the check tested.
+    const auto withTransient = riseErrorOf (decided);
+    const auto without = riseErrorOf (plain);
+    INFO ("rise error " << withTransient << " against " << without);
+    CHECK (withTransient < without);
 }
 
 TEST_CASE ("the master is not clamped to one", "[fit]")

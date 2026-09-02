@@ -64,9 +64,15 @@ actually be opened in. `src/vital/VitalHost.h` is the whole of the hosting, and
 the test suite shares it so that both drive the plug-in the same way.
 
 ```
-autosynth_vital fitted.json out.wav --fit samples/clarinet.wav --preset out.vital
-autosynth_diff  samples/clarinet.wav out.wav
+autosynth_vital fitted.json out.wav --fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital
+autosynth_diff  plugin/tests/golden/analysis/lfo_amp.wav out.wav
 ```
+
+Any mono `.wav` of one sustained note works; that one is a test fixture, so it
+is here to clone. The two instrument recordings this file quotes throughout are
+not: they are library material that cannot be redistributed, so the numbers
+below can be read but not re-run against the same audio. Nothing in the build or
+the suite depends on them.
 
 `autosynth_probe --patch` writes a patch too, but an *analysis* one: it has no
 renderer, so the levels are whatever the factorisation left and the noise bed is
@@ -79,7 +85,7 @@ ground-truth recovery harness inside Vital — random patches rendered by Vital 
 the targets, and the control and every candidate rendered there too.
 
 ```
-autosynth_vital fitted.json out.wav --fit samples/clarinet.wav --dur 4 --gate 3
+autosynth_vital fitted.json out.wav --fit recording.wav --dur 4 --gate 3
 autosynth_vital --eval --trials 12 --seed 0
 ```
 

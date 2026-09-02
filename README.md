@@ -43,10 +43,18 @@ other -- and pointing the test suite at Vital immediately found four export
 defects that had been shipping, including a preset driven 12 dB into Vital's own
 limiter.
 
-Against the two library recordings the presets are within tolerance on most of
-the axes the diagnostic reports -- pitch, brightness, noisiness, vibrato,
-note-off and level -- and short on the clarinet's timbre movement and on both
-onsets. Oscillator counting remains the weakest structural step.
+How good is the result? `autosynth_diff` reports eleven named axes, and on two
+instrument recordings a fit lands four to eight of them inside tolerance
+depending on the draw -- the search is stochastic, and the same recording fitted
+from two seeds is not the same preset. Pitch, attack, note-off and level are
+reliable. Tremolo depth and timbre movement are the weakest, because a single
+LFO is the wrong model for the way a player's tone actually moves. Oscillator
+counting, at about 70% exact, is the weakest structural step.
+
+Those recordings are library material and are not in this repository, so the
+measurements throughout [CONTRIBUTING.md](CONTRIBUTING.md) can be read but not
+re-run against the same audio. Nothing in the build or the test suite depends on
+them.
 
 Not started: exporters to other synths, and stereo.
 
@@ -64,7 +72,14 @@ because it is the synth: it renders the fit, and the test cases that need sound
 are skipped without it.
 
 ```powershell
-autosynth_vital fitted.json out.wav --fit samples/violin.wav --preset out.vital
+autosynth_vital fitted.json out.wav --fit your-recording.wav --preset out.vital
+```
+
+Any mono `.wav` of a single sustained note will do. There is one in the
+repository to try it on, a two-second tremolo used by the test suite:
+
+```powershell
+autosynth_vital fitted.json out.wav --fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital
 ```
 
 No Vital code is compiled or shipped here; the tool hosts whatever VST3 it

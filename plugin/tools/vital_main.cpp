@@ -23,8 +23,8 @@
 //                   [--sr 48000] [--plugin path/to/Vital.vst3] [--preset out.vital]
 //
 // How close the result is to the recording is autosynth_diff's job:
-//   autosynth_vital fitted.json out.wav --fit samples/violin.wav
-//   autosynth_diff  samples/violin.wav  out.wav
+//   autosynth_vital fitted.json out.wav --fit recording.wav
+//   autosynth_diff  recording.wav       out.wav
 
 #include "eval/Recovery.h"
 #include "fit/PartialFit.h"
