@@ -48,7 +48,7 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 |---|---|
 | `autosynth_dsp` | Static library: analysis, fitting and the exporter. Everything else links it. |
 | `autosynth_tests` | The test suite |
-| `autosynth` | Everything a person runs, behind a verb: `fit`, `diff`, `render`, `probe`, `score`, `eval`, `selftest` |
+| `autosynth` | Everything a person runs, behind a verb: `fit`, `diff`, `render`, `probe`, `score`, `eval`, `selftest`, `gui` |
 
 There is no synth here, and no plug-in. Both were removed once the deliverable
 became a preset rather than a sound: a synth of our own is a thing to keep in
@@ -69,6 +69,50 @@ two positional slots, each bolted on after the last. A verb says what the
 arguments are before they are read, and a release becomes one file to download.
 The test suite stays its own binary: Catch2 owns a command line of its own, and
 the golden fixtures it needs are in the repository rather than in the download.
+
+### The UI, in the same binary
+
+`gui` opens it, and so does launching the binary with no arguments and no
+terminal — a double-click, or a recording dropped on the exe in Explorer, which
+hands us the file path where a verb would go.
+
+On Windows an executable is CONSOLE or it is WINDOWS; the subsystem is one flag
+in the PE header and there is no third option. This one is CONSOLE. WINDOWS is
+the worse choice: such a binary gets no console from a terminal and can attach
+to its parent's, but the shell does not *wait* for it, having no reason to think
+it will write anything. `autosynth fit x.wav` would return to the prompt
+immediately and then print over it, and `&&` would stop working. That breaks the
+CLI to add a UI.
+
+CONSOLE costs a console window on a double-click, which can be dismissed:
+`GetConsoleProcessList` reports one attached process only when Windows allocated
+the console for us, which is what a double-click does and what running from a
+terminal does not. When we own it the UI frees it; when we do not, it is the
+user's terminal and is left alone. The same test decides whether a bare
+`autosynth` prints usage or opens the UI, so neither audience gets the other
+one's answer.
+
+It is not a synth editor. No keyboard and no knobs: the preset is the output,
+Vital is where it gets edited, and a second set of controls here would invite
+editing the copy that is thrown away.
+
+Two things keep it the same program rather than a second one:
+
+- `tools/FitJob.h` is the fit, and both `fit` and the UI call it. The failure
+  this prevents has happened here: a fit that lost its renderer came back
+  looking complete — oscillators, envelope, filter, all populated — and was
+  simply wrong, with nothing in the output to say so. Two copies of the order of
+  operations means two chances at that.
+- `src/eval/Diagnose.h` is the measuring, and both `diff` and the UI read it.
+  Same rule the fitter follows: the number shown and the number measured are the
+  same number. It lived in `diff_main.cpp` until the UI needed it.
+
+Refinement is a couple of hundred renders, so it runs on a worker thread with
+the plug-in opened on the message thread beforehand — instantiating a VST3 off
+the message thread is not something to rely on. Cancelling makes the renderer
+return silence rather than calling Vital: the search then finishes its remaining
+evaluations in milliseconds against a constant and the answer is thrown away,
+which is far simpler than unwinding an optimiser from the inside.
 
 ```
 autosynth fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital --render out.wav

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 # C is required as well as C++: JUCE compiles a few C sources and refuses to
 # configure without it enabled.
-project(AutoSynth VERSION 0.0.1 LANGUAGES C CXX)
+project(AutoSynth VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,7 +55,8 @@ add_library(autosynth_dsp STATIC
     src/fit/CmaEs.cpp
     src/fit/Refine.cpp
     src/fit/EffectsFit.cpp
-    src/eval/Recovery.cpp)
+    src/eval/Recovery.cpp
+    src/eval/Diagnose.cpp)
 
 target_include_directories(autosynth_dsp PUBLIC src)
 target_link_libraries(autosynth_dsp
@@ -97,8 +98,13 @@ target_sources(autosynth PRIVATE
     tools/main.cpp
     tools/probe_main.cpp
     tools/diff_main.cpp
+    tools/gui_main.cpp
     tools/vital_main.cpp)
-target_compile_definitions(autosynth PRIVATE ${AUTOSYNTH_HOST_DEFINITIONS})
+# The version reaches the binary from one place, so `--version` and the window
+# cannot disagree with the file properties Windows shows.
+target_compile_definitions(autosynth PRIVATE
+    ${AUTOSYNTH_HOST_DEFINITIONS}
+    AUTOSYNTH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(autosynth
     PRIVATE autosynth_dsp
             juce::juce_audio_processors

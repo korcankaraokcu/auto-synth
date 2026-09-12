@@ -37,6 +37,7 @@
 #include "vital/VitalHost.h"
 
 #include "Cli.h"
+#include "FitJob.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -407,34 +408,27 @@ int runVital (const juce::String& verb, const Args& args)
     // measuring the real output.
     if (fitting)
     {
-        autosynth::PartialFit::Options fitOptions;
-        fitOptions.gateSeconds = gate;
-        fitOptions.renderer = renderer;
-        patch = autosynth::PartialFit::fit (target.data(), (int) target.size(),
-                                            sampleRate, fitOptions);
-
-        autosynth::Refine::Options refineOptions;
-        refineOptions.maxEvaluations = (int) args.value ("--refine-evals", 192.0);
-        refineOptions.gateSeconds = gate;
-        refineOptions.renderer = renderer;
+        // `job::fit` rather than the stages in line, because the window runs
+        // this too and two copies of the order of operations is two chances at
+        // leaving a step out. That is not hypothetical here: a fit that lost
+        // its renderer came back looking complete and was silently wrong.
+        autosynth::job::Options jobOptions;
+        jobOptions.gateSeconds = gate;
+        jobOptions.refineEvaluations = (int) args.value ("--refine-evals", 192.0);
 
         // Exposed because one fit is one sample of a search, not the answer.
         // The objective has seven terms and CMA-ES settles on a different trade
         // between them from a different draw, so a change that moves one axis
         // has to be read against the spread rather than against one run.
-        refineOptions.seed = (unsigned) args.value ("--seed", 1.0);
+        jobOptions.seed = (unsigned) args.value ("--seed", 1.0);
 
-        const auto started = juce::Time::getMillisecondCounterHiRes();
-        const auto refined = autosynth::Refine::run (patch, target.data(), (int) target.size(),
-                                                     sampleRate, refineOptions);
-        const auto elapsed = juce::Time::getMillisecondCounterHiRes() - started;
-
-        patch = refined.patch;
+        const auto fitResult = autosynth::job::fit (host, target, sampleRate, jobOptions);
+        patch = fitResult.patch;
 
         std::printf ("fitted %s through Vital: loss %.4f -> %.4f over %d evaluations "
                      "in %.1f s\n",
-                     targetPath.toRawUTF8(), refined.initialLoss, refined.finalLoss,
-                     refined.evaluations, elapsed / 1000.0);
+                     targetPath.toRawUTF8(), fitResult.initialLoss, fitResult.finalLoss,
+                     fitResult.evaluations, fitResult.seconds);
 
         if (args.has ("--patch"))
         {

@@ -53,6 +53,15 @@ struct Args
     {
         return juce::File::getCurrentWorkingDirectory().getChildFile (text (flag));
     }
+
+    // A copy with one more argument in front, for the case where what looked
+    // like a verb turns out to be one of the arguments.
+    Args withPositional (const juce::String& first) const
+    {
+        Args out = *this;
+        out.positional.insert (0, first);
+        return out;
+    }
 };
 
 // `from` skips the program name and the verb.

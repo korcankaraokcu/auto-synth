@@ -4,11 +4,12 @@ plugin/build/
 build/
 dist/
 
-# Generated audio and reports
+# Generated audio, presets and reports
 demo/
 out/
 reports/
 *.wav
+*.vital
 
 # ...except the golden fixtures, which are reference data the test suite needs
 # in order to mean anything. They were produced by the Python implementation

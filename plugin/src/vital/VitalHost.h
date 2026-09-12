@@ -86,6 +86,20 @@ public:
         return true;
     }
 
+    // A recording at a different rate costs a re-prepare rather than another
+    // plug-in scan. The command line opens at the target's rate and never needs
+    // this; the UI is already open before it knows what it will be given.
+    void setSampleRate (double newRate)
+    {
+        if (instance == nullptr || newRate <= 0.0
+            || std::abs (newRate - sampleRate) < 1.0e-6)
+            return;
+
+        sampleRate = newRate;
+        instance->releaseResources();
+        instance->prepareToPlay (sampleRate, blockSize);
+    }
+
     bool isOpen() const noexcept { return instance != nullptr; }
     juce::AudioPluginInstance* plugin() const noexcept { return instance.get(); }
 
