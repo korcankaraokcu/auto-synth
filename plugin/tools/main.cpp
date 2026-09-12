@@ -86,7 +86,7 @@ void releaseConsole()
 int usage()
 {
     std::printf (
-        "autosynth " AUTOSYNTH_VERSION " -- turn a recording into an editable Vital preset\n"
+        "autosynth " AUTOSYNTH_VERSION " -- turn a recording into a Vital preset\n"
         "\n"
         "  autosynth fit <recording.wav> [--preset out.vital] [--patch out.json]\n"
         "                                [--render out.wav] [--dur s] [--gate s]\n"

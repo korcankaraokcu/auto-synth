@@ -1,20 +1,15 @@
 # auto-synth
 
-Turn a recording of a single note into an **editable** Vital preset.
+Turn a recording of a single note into a Vital preset.
 
-Not a wavetable dump and not a black box: the output is a small set of
-oscillators, envelopes, filters and modulation that a person can open and
-change. The objective is not "minimise reconstruction error" — a sampler already
-scores zero on that — it is **minimise error subject to a parameter budget**.
+The output is a handful of oscillators, envelopes, filters and modulation — few
+enough to open up and change — rather than a wavetable dump. Minimising
+reconstruction error is not the objective, because a sampler wins that outright;
+the objective is **minimising it subject to a parameter budget**.
 
 The recording is analysed into partials, split into sources and fitted to a
 patch, and the patch is then refined by CMA-ES against Vital itself: every
 candidate is rendered by the synth the preset will be opened in.
-
-- **3 oscillators**, each with its own tuning, unison and envelope
-- **Every oscillator is a wavetable**, up to 16 frames of 16 harmonics
-- **2 LFO slots**, so vibrato and tremolo can coexist rather than compete
-- Filter with envelope, delay and reverb
 
 ## Use
 
