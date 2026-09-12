@@ -512,7 +512,7 @@ TEST_CASE ("a fit without a renderer is visibly unfinished", "[fit]")
     // without a synth to render through. A caller that forgets to pass one gets
     // a patch back that looks like a fit the whole way -- oscillators, envelope,
     // filter, all populated -- and is wrong in exactly the two places nothing
-    // else checks. `autosynth_vital --fit` forgot, and shipped a clarinet four
+    // else checks. `autosynth fit` forgot, and shipped a clarinet four
     // decibels quiet with its noise bed at zero.
     //
     // So the two states have to be distinguishable, and this says how: no

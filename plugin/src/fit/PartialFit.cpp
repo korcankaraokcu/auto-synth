@@ -410,7 +410,7 @@ namespace
 {
 
 // Where the rise is sampled, in seconds after the note starts. The same points
-// `autosynth_diff` prints, so a decision taken here is one a reader can check
+// `autosynth diff` prints, so a decision taken here is one a reader can check
 // against the report.
 constexpr double kRiseSeconds[] = { 0.010, 0.025, 0.050, 0.100, 0.200, 0.400 };
 
@@ -974,7 +974,7 @@ Patch PartialFit::fit (const float* samples, int numSamples, double sampleRate,
     // How much noise this material has actually got, rather than how much a
     // pitched patch is allowed in general. Measured between the harmonics of
     // the fundamental that was just fitted, which is the same measurement
-    // `autosynth_diff` prints as noisiness.
+    // `autosynth diff` prints as noisiness.
     const auto share = Roles::noiseShare (samples, numSamples, sampleRate, patch.rootHz,
                                           trackOptions.fftSize, options.hop);
     const auto ceiling = kMaxPitchedNoise

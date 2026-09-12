@@ -19,12 +19,15 @@
 // submodule would render the public source drop, which is not necessarily the
 // same engine.
 //
-//   autosynth_vital patch.json out.wav [--note 220] [--dur 2.0] [--gate 1.5]
-//                   [--sr 48000] [--plugin path/to/Vital.vst3] [--preset out.vital]
+//   autosynth fit    recording.wav [--preset out.vital] [--render out.wav]
+//   autosynth render patch.json    out.wav [--note 220] [--dur 2.0] [--gate 1.5]
+//   autosynth score  patch.json    recording.wav
+//   autosynth eval   [--trials 12] [--seed 0]
+//   autosynth selftest patch.json
 //
-// How close the result is to the recording is autosynth_diff's job:
-//   autosynth_vital fitted.json out.wav --fit recording.wav
-//   autosynth_diff  recording.wav       out.wav
+// How close the result is to the recording is `autosynth diff`'s job:
+//   autosynth fit  recording.wav --render out.wav
+//   autosynth diff recording.wav out.wav
 
 #include "eval/Recovery.h"
 #include "fit/PartialFit.h"
@@ -32,6 +35,8 @@
 #include "ir/Patch.h"
 #include "ir/VitalExport.h"
 #include "vital/VitalHost.h"
+
+#include "Cli.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -43,88 +48,12 @@
 #include <cstdio>
 #include <string>
 #include <utility>
-#include <map>
 #include <vector>
 
 namespace
 {
 
-struct Args
-{
-    std::map<juce::String, juce::String> options;
-    juce::StringArray positional;
-
-    double value (const char* flag, double fallback) const
-    {
-        const auto it = options.find (flag);
-        if (it == options.end() || it->second.isEmpty())
-            return fallback;
-        return it->second.getDoubleValue();
-    }
-
-    juce::String text (const char* flag, const juce::String& fallback = {}) const
-    {
-        const auto it = options.find (flag);
-        return it == options.end() ? fallback : it->second;
-    }
-};
-
-// Hand-parsed because juce::ArgumentList treats an option's value as a separate
-// positional argument.
-Args parseArgs (int argc, char* argv[])
-{
-    Args out;
-    std::vector<juce::String> raw;
-    for (int i = 1; i < argc; ++i)
-        raw.emplace_back (juce::CharPointer_UTF8 (argv[i]));
-
-    for (size_t i = 0; i < raw.size(); ++i)
-    {
-        if (! raw[i].startsWith ("--"))
-        {
-            out.positional.add (raw[i]);
-            continue;
-        }
-
-        auto key = raw[i];
-        juce::String value;
-        if (key.containsChar ('='))
-        {
-            value = key.fromFirstOccurrenceOf ("=", false, false);
-            key = key.upToFirstOccurrenceOf ("=", false, false);
-        }
-        else if (i + 1 < raw.size() && ! raw[i + 1].startsWith ("--"))
-        {
-            value = raw[++i];
-        }
-        out.options[key] = value;
-    }
-    return out;
-}
-
-std::vector<float> readMono (const juce::File& file, double& sampleRateOut)
-{
-    juce::AudioFormatManager formats;
-    formats.registerBasicFormats();
-    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
-    if (reader == nullptr)
-        return {};
-
-    const auto numSamples = (int) reader->lengthInSamples;
-    juce::AudioBuffer<float> buffer ((int) reader->numChannels, juce::jmax (1, numSamples));
-    reader->read (&buffer, 0, numSamples, 0, true, true);
-
-    if (buffer.getNumChannels() > 1)
-    {
-        for (int ch = 1; ch < buffer.getNumChannels(); ++ch)
-            buffer.addFrom (0, 0, buffer, ch, 0, numSamples);
-        buffer.applyGain (0, 0, numSamples, 1.0f / buffer.getNumChannels());
-    }
-
-    sampleRateOut = reader->sampleRate;
-    const auto* data = buffer.getReadPointer (0);
-    return std::vector<float> (data, data + numSamples);
-}
+using autosynth::cli::Args;
 
 // The inverse, so --dump-state reports the preset the plugin is actually
 // holding rather than the container it arrived in.
@@ -160,63 +89,65 @@ juce::String unwrapVst3State (const juce::MemoryBlock& raw)
 
 } // namespace
 
-int main (int argc, char* argv[])
+// Every verb that needs sound, behind one entry point.
+//
+// The verb decides what the arguments mean, which is the whole reason this is
+// not one command with six flags any more. It used to be: `<patch.json>
+// <out.wav>` was an input and an output, unless `--fit` was passed, in which
+// case the first became an output too, unless `--eval` was passed, in which
+// case neither was read at all. Nobody could hold that, including the person
+// who wrote it.
+int runVital (const juce::String& verb, const Args& args)
 {
     // Hosting needs a message manager: the VST3 format scans and instantiates
     // on it, and asserts without one.
     juce::ScopedJuceInitialiser_GUI juceInit;
 
-    const auto args = parseArgs (argc, argv);
-    const auto& positional = args.positional;
+    const auto fitting = verb == "fit";
+    const auto evaluating = verb == "eval";
+    const auto scoring = verb == "score";
+    const auto sweeping = verb == "selftest";
 
-    const auto evaluating = args.options.count ("--eval") > 0
-                         || args.options.count ("--sweep") > 0;
-
-    if (positional.size() < 2 && ! evaluating)
+    // What each verb reads and writes, said once.
+    //
+    //   fit      <recording.wav>              --preset/--patch/--render
+    //   render   <patch.json> <out.wav>
+    //   score    <patch.json> <recording.wav>
+    //   selftest <patch.json>
+    //   eval     --
+    const auto needs = evaluating ? 0 : (scoring ? 2 : (fitting || sweeping ? 1 : 2));
+    if (args.positional.size() < needs)
     {
-        std::fprintf (stderr,
-                      "usage: autosynth_vital <patch.json> <out.wav> "
-                      "[--note hz] [--dur s] [--gate s] [--sr rate] "
-                      "[--plugin Vital.vst3] [--preset out.vital]\n"
-                      "       autosynth_vital <patch-out.json> <out.wav> "
-                      "--fit <target.wav> [--refine-evals n] [--seed n]\n"
-                      "       autosynth_vital <patch.json> <out.wav> --score <target.wav>\n"
-                      "       autosynth_vital --eval [--trials n] [--seed n]\n"
-                      "       autosynth_vital <patch.json> <out.wav> --sweep\n"
-                      "       autosynth_vital <patch.json> <out.wav> --check-repeatable\n");
+        std::fprintf (stderr, "autosynth %s: expected %d argument%s\n",
+                      verb.toRawUTF8(), needs, needs == 1 ? "" : "s");
         return 2;
     }
 
-    const auto cwd = juce::File::getCurrentWorkingDirectory();
-    const auto patchFile = cwd.getChildFile (positional.size() > 0 ? positional[0] : "patch.json");
-    const auto outFile = cwd.getChildFile (positional.size() > 1 ? positional[1] : "out.wav");
-
-    // With --fit the first argument is an output rather than an input: the
-    // target is fitted with Vital doing the rendering, and the patch it settles
-    // on is written there.
-    const auto fitPath = args.text ("--fit");
-    const auto fitting = fitPath.isNotEmpty();
+    const auto patchFile = fitting ? args.fileFor ("--patch") : args.file (0);
+    const auto outFile = fitting ? args.fileFor ("--render") : args.file (1);
+    const auto targetPath = fitting ? args.at (0) : (scoring ? args.at (1) : juce::String());
 
     std::vector<float> target;
     auto sampleRate = args.value ("--sr", 48000.0);
     autosynth::Patch patch;
 
-    if (fitting)
+    if (targetPath.isNotEmpty())
     {
         double targetRate = 0.0;
-        target = readMono (cwd.getChildFile (fitPath), targetRate);
+        target = autosynth::cli::readMono (args.file (fitting ? 0 : 1), targetRate);
         if (target.empty())
         {
-            std::fprintf (stderr, "error: cannot read %s\n", fitPath.toRawUTF8());
+            std::fprintf (stderr, "error: cannot read %s\n", targetPath.toRawUTF8());
             return 1;
         }
         // The target's own rate, so the loss compares like with like.
         sampleRate = targetRate;
     }
-    else if (! evaluating)
+
+    if (! fitting && ! evaluating)
     {
         juce::String error;
-        patch = autosynth::Patch::fromFile (patchFile, &error);
+        patch = autosynth::Patch::fromFile (args.file (0), &error);
         if (error.isNotEmpty())
         {
             std::fprintf (stderr, "error: %s\n", error.toRawUTF8());
@@ -276,6 +207,51 @@ int main (int argc, char* argv[])
         return renderPatch (p, p.rootHz, dur, gateSeconds);
     };
 
+    // Both selftests run in one pass: the sweep is only worth reading if the
+    // renders it compares are the same renders twice over.
+    auto repeatable = true;
+
+    // Does one patch render the same way twice?
+    //
+    // It did not, and nothing about the failure was visible from the audio: two
+    // renders of one preset differed by 0.072 at the sample on a peak of 0.43,
+    // alternating on every other render. In the terms the objective is built
+    // from that was a spectral distance of 0.057 and two decibels of loudness,
+    // against a fit whose own loudness error is about four and a half -- so
+    // nearly half of that term was noise, and had been through every comparison
+    // made before it was found.
+    //
+    // The cause was Vital's reverb chorus free-running at a quarter of a hertz,
+    // sampled every two seconds; the exporter now switches it off. What remains
+    // is a random LFO where a patch has one, which is random by construction.
+    //
+    // Kept as a standing check because the failure is silent: an objective that
+    // returns a different number for the same patch reads as a search that
+    // cannot converge, and there is nothing in a rendered note that says so.
+    if (sweeping)
+    {
+        // Both of these begin from the same state: every render settles the
+        // plug-in first, and the very first one of a process is discarded --
+        // which is the state every evaluation of a fit begins from, and
+        // therefore the one worth checking.
+        const auto first = renderPatch (patch, patch.rootHz, duration, gate);
+        const auto second = renderPatch (patch, patch.rootHz, duration, gate);
+
+        auto worst = 0.0;
+        for (size_t i = 0; i < juce::jmin (first.size(), second.size()); ++i)
+            worst = juce::jmax (worst, (double) std::abs (first[i] - second[i]));
+
+        const auto self = autosynth::Recovery::score (first, second, sampleRate);
+        std::printf ("one patch rendered twice:\n"
+                     "  worst sample  %.6f\n"
+                     "  spectral      %.4f\n"
+                     "  loudness      %.2f dB\n"
+                     "  centroid      %.3f oct\n",
+                     worst, self.spectral, self.loudnessDb, self.centroidOctaves);
+        repeatable = self.loudnessDb < 1.0;
+        std::printf ("\n");
+    }
+
     // Which searchable parameters actually move the sound Vital makes.
     //
     // The unit test guarding this can only ask whether a parameter changes the
@@ -288,7 +264,7 @@ int main (int argc, char* argv[])
     // So this moves each parameter to the far end of its declared range, plays
     // the result, and reports the spectral distance from the unmoved patch.
     // Anything near zero is carried in name only.
-    if (args.options.count ("--sweep") > 0)
+    if (sweeping)
     {
         autosynth::Patch probe;
         probe.rootHz = 220.0f;
@@ -350,47 +326,7 @@ int main (int argc, char* argv[])
             std::printf ("  %-34s %.4f%s\n", row.second.c_str(), row.first,
                          row.first < 0.02 ? "   <- inert" : "");
         std::printf ("\n");
-        return 0;
-    }
-
-    // Does one patch render the same way twice?
-    //
-    // It did not, and nothing about the failure was visible from the audio: two
-    // renders of one preset differed by 0.072 at the sample on a peak of 0.43,
-    // alternating on every other render. In the terms the objective is built
-    // from that was a spectral distance of 0.057 and two decibels of loudness,
-    // against a fit whose own loudness error is about four and a half -- so
-    // nearly half of that term was noise, and had been through every comparison
-    // made before it was found.
-    //
-    // The cause was Vital's reverb chorus free-running at a quarter of a hertz,
-    // sampled every two seconds; the exporter now switches it off. What remains
-    // is a random LFO where a patch has one, which is random by construction.
-    //
-    // Kept as a standing check because the failure is silent: an objective that
-    // returns a different number for the same patch reads as a search that
-    // cannot converge, and there is nothing in a rendered note that says so.
-    if (args.options.count ("--check-repeatable") > 0)
-    {
-        // Both of these begin from the same state: every render settles the
-        // plug-in first, and the very first one of a process is discarded --
-        // which is the state every evaluation of a fit begins from, and
-        // therefore the one worth checking.
-        const auto first = renderPatch (patch, patch.rootHz, duration, gate);
-        const auto second = renderPatch (patch, patch.rootHz, duration, gate);
-
-        auto worst = 0.0;
-        for (size_t i = 0; i < juce::jmin (first.size(), second.size()); ++i)
-            worst = juce::jmax (worst, (double) std::abs (first[i] - second[i]));
-
-        const auto self = autosynth::Recovery::score (first, second, sampleRate);
-        std::printf ("one patch rendered twice:\n"
-                     "  worst sample  %.6f\n"
-                     "  spectral      %.4f\n"
-                     "  loudness      %.2f dB\n"
-                     "  centroid      %.3f oct\n",
-                     worst, self.spectral, self.loudnessDb, self.centroidOctaves);
-        return self.loudnessDb < 1.0 ? 0 : 1;
+        return repeatable ? 0 : 1;
     }
 
 
@@ -405,16 +341,10 @@ int main (int argc, char* argv[])
     // Scoring a patch and a hand-corrected copy of it separates them in two
     // renders. Weights are not applied, because they are relative to whatever
     // patch a run started from and mean nothing outside it.
-    if (const auto it = args.options.find ("--score"); it != args.options.end()
-        && it->second.isNotEmpty())
+    if (scoring)
     {
-        double targetRate = 0.0;
-        const auto against = readMono (cwd.getChildFile (it->second), targetRate);
-        if (against.empty())
-        {
-            std::fprintf (stderr, "error: cannot read %s\n", it->second.toRawUTF8());
-            return 1;
-        }
+        const auto& against = target;
+        const auto targetRate = sampleRate;
 
         autosynth::Refine::Options scoreOptions;
         scoreOptions.gateSeconds = args.options.count ("--gate") > 0 ? gate : -1.0;
@@ -432,7 +362,7 @@ int main (int argc, char* argv[])
                      "  wobble     %8.4f dB\n"
                      "  onset      %8.4f\n"
                      "  level      %8.4f dB\n",
-                     patchFile.getFileName().toRawUTF8(), it->second.toRawUTF8(),
+                     patchFile.getFileName().toRawUTF8(), targetPath.toRawUTF8(),
                      loss.spectral, loss.loudness, loss.centroid, loss.attack,
                      loss.drift, loss.wobble, loss.onset, loss.level);
         return 0;
@@ -500,23 +430,43 @@ int main (int argc, char* argv[])
         const auto elapsed = juce::Time::getMillisecondCounterHiRes() - started;
 
         patch = refined.patch;
-        patchFile.replaceWithText (patch.toJson());
 
         std::printf ("fitted %s through Vital: loss %.4f -> %.4f over %d evaluations "
-                     "in %.1f s -> %s\n",
-                     fitPath.toRawUTF8(), refined.initialLoss, refined.finalLoss,
-                     refined.evaluations, elapsed / 1000.0,
-                     patchFile.getFullPathName().toRawUTF8());
+                     "in %.1f s\n",
+                     targetPath.toRawUTF8(), refined.initialLoss, refined.finalLoss,
+                     refined.evaluations, elapsed / 1000.0);
+
+        if (args.has ("--patch"))
+        {
+            patchFile.replaceWithText (patch.toJson());
+            std::printf ("  patch  %s\n", patchFile.getFullPathName().toRawUTF8());
+        }
     }
 
     const auto requestedHz = args.value ("--note", patch.rootHz);
     const auto midiNote = noteFor (requestedHz);
     const auto renderedHz = 440.0 * std::pow (2.0, (midiNote - 69) / 12.0);
 
-    const auto presetPath = args.text ("--preset");
-    if (presetPath.isNotEmpty())
-        cwd.getChildFile (presetPath)
-            .replaceWithText (autosynth::VitalExport::toJson (patch, patch.name));
+    // Nothing is written that was not asked for.
+    //
+    // `render` names its output; `fit` takes its outputs as options, because a
+    // fit has three of them -- the preset, the patch and the audio -- and only
+    // the first is usually wanted. A fit asked for none of them still writes
+    // the preset, next to the recording, because a converter that converts and
+    // saves nothing is a stopwatch.
+    const auto namedAnOutput = args.has ("--preset") || args.has ("--patch")
+                               || args.has ("--render");
+    const auto presetFile = args.has ("--preset")
+                              ? args.fileFor ("--preset")
+                              : (fitting && ! namedAnOutput
+                                     ? args.file (0).withFileExtension (".vital")
+                                     : juce::File());
+
+    if (presetFile != juce::File())
+    {
+        presetFile.replaceWithText (autosynth::VitalExport::toJson (patch, patch.name));
+        std::printf ("  preset %s\n", presetFile.getFullPathName().toRawUTF8());
+    }
 
     loadPreset (patch);
 
@@ -531,7 +481,7 @@ int main (int argc, char* argv[])
         juce::MemoryBlock state;
         plugin->getStateInformation (state);
         const auto inner = unwrapVst3State (state);
-        cwd.getChildFile (dumpPath).replaceWithText (inner);
+        args.fileFor ("--dump-state").replaceWithText (inner);
         std::printf ("plugin state: %d bytes wrapped, %d bytes of preset -> %s\n",
                      (int) state.getSize(), inner.length(), dumpPath.toRawUTF8());
     }
@@ -591,44 +541,27 @@ int main (int argc, char* argv[])
                      renderMs / repeat, renderMs / repeat * 192.0 / 1000.0);
     }
 
-    juce::AudioBuffer<float> buffer (1, (int) rendered.size());
-    buffer.copyFrom (0, 0, rendered.data(), (int) rendered.size());
-
-    plugin->releaseResources();
-
-    // Peak-limit rather than normalise: the absolute level is part of what the
-    // comparison is checking.
-    auto peak = 0.0f;
-    for (int i = 0; i < buffer.getNumSamples(); ++i)
-        peak = juce::jmax (peak, std::abs (buffer.getSample (0, i)));
-    if (peak > 1.0f)
-        buffer.applyGain (1.0f / peak);
-
-    outFile.deleteFile();
-    std::unique_ptr<juce::FileOutputStream> stream (outFile.createOutputStream());
-    if (stream == nullptr)
+    // `render` is named after its output and always writes it; a fit only does
+    // when asked, because most fits are wanted as a preset and the audio is
+    // there to check it against the recording.
+    const auto wantsAudio = ! fitting || args.has ("--render");
+    if (wantsAudio && ! autosynth::cli::writeWav (outFile, rendered, sampleRate))
     {
         std::fprintf (stderr, "error: cannot write %s\n",
                       outFile.getFullPathName().toRawUTF8());
         return 1;
     }
 
-    juce::WavAudioFormat wav;
-    std::unique_ptr<juce::AudioFormatWriter> writer (
-        wav.createWriterFor (stream.get(), sampleRate, 1, 24, {}, 0));
-    if (writer == nullptr)
-    {
-        std::fprintf (stderr, "error: cannot create WAV writer\n");
-        return 1;
-    }
-    stream.release(); // writer owns it now
+    auto peak = 0.0f;
+    for (const auto v : rendered)
+        peak = juce::jmax (peak, std::abs (v));
 
-    writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
-    writer.reset();
-
-    std::printf ("rendered %s through %s at note %d (%.2f Hz, asked %.2f) -> %s (%.2fs, peak %.3f)\n",
+    std::printf ("%s through %s at note %d (%.2f Hz, asked %.2f)%s%s (%.2fs, peak %.3f)\n",
                  patch.name.toRawUTF8(), plugin->getName().toRawUTF8(), midiNote, renderedHz,
-                 requestedHz, outFile.getFullPathName().toRawUTF8(),
-                 buffer.getNumSamples() / sampleRate, peak);
+                 requestedHz,
+                 wantsAudio ? " -> " : "",
+                 wantsAudio ? outFile.getFullPathName().toRawUTF8() : "",
+                 rendered.size() / sampleRate, peak);
     return 0;
 }
+

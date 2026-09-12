@@ -120,7 +120,7 @@ public:
     // How fast a zero-mean trajectory oscillates, in Hz, by periodogram.
     //
     // Public so the diagnostic can report the same number the fitter acts on.
-    // `autosynth_diff` used to have its own estimator -- smooth, then count
+    // `autosynth diff` used to have its own estimator -- smooth, then count
     // sign changes -- which read a pure 3.31 Hz sine as 2.8 Hz, because the
     // smoothing that makes crossing-counting usable also removes the crossings.
     // That cost an afternoon: a clarinet whose tremolo rate the fitter had

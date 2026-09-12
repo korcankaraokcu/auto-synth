@@ -86,7 +86,7 @@ public:
     //
     // The same blindness accounts for the timbre drift and the tremolo depth,
     // which is three of the four things a listener has objected to. Meanwhile
-    // `autosynth_diff` has been measuring all three on named axes whose
+    // `autosynth diff` has been measuring all three on named axes whose
     // verdicts have agreed with a listener repeatedly. So these are the
     // diagnostic's own quantities, computed the same way, brought inside the
     // objective: match the target's attack, its harmonic movement, and its

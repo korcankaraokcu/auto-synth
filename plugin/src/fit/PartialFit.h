@@ -78,7 +78,7 @@ public:
     //
     // Measured and closed-loop instead: render, measure, scale, repeat. Two
     // passes are enough because the relationship is close to proportional, and
-    // it is the same measurement `autosynth_diff` prints as noisiness.
+    // it is the same measurement `autosynth diff` prints as noisiness.
     static Patch calibrateNoise (Patch patch, const float* target, int numSamples,
                                  double sampleRate, double gateSeconds, float ceiling,
                                  const Renderer& renderer);

@@ -60,7 +60,7 @@ constexpr auto kMinEnergyShare = 0.25;
 constexpr auto kFramesMustBeatTableBy = 0.80;
 
 // And a floor in decibels for the third rung, stated in the same units and
-// measured the same way as the timbre drift `autosynth_diff` reports -- the
+// measured the same way as the timbre drift `autosynth diff` reports -- the
 // diagnostic that says a fit is too static and the fitter that decides to fix
 // it have to be measuring the same quantity, or one will keep reporting a
 // problem the other has decided does not exist.

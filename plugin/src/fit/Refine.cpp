@@ -172,7 +172,7 @@ double harmonicDriftDb (const Stft::Result& spectrogram, double f0)
     return drift / (double) early.size();
 }
 
-// Where the rise is sampled, in seconds. The same points `autosynth_diff`
+// Where the rise is sampled, in seconds. The same points `autosynth diff`
 // prints and `PartialFit::addTransient` decides on, so the objective, the
 // report and the analysis all mean the same thing by "the rise".
 constexpr double kRiseSeconds[] = { 0.010, 0.025, 0.050, 0.100, 0.200, 0.400 };
@@ -762,7 +762,7 @@ Refine::Result Refine::run (const Patch& patch, const float* target, int numSamp
     //
     // It is set closed-loop before this runs -- render, measure the energy
     // between the harmonics, scale, repeat -- against the same quantity
-    // `autosynth_diff` reports as noisiness. Left at its full range, refinement
+    // `autosynth diff` reports as noisiness. Left at its full range, refinement
     // undid that: a violin calibrated to 0.05 came back at 0.015 with its bow
     // stripped off, because broadband energy lowers a log-spectral error
     // wherever the harmonic fit is imperfect and the optimiser always finds

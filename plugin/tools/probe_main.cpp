@@ -9,7 +9,7 @@
 // final patch looked reasonable -- which is exactly the "debugging two ports at
 // once" problem that porting the engine first was meant to avoid.
 //
-//   autosynth_probe input.wav [--hop 256] [--fft 2048]
+//   autosynth probe input.wav [--hop 256] [--fft 2048]
 
 #include "analysis/Grouping.h"
 #include "fit/EnvelopeFit.h"
@@ -23,59 +23,18 @@
 #include "analysis/Stft.h"
 #include "analysis/Yin.h"
 
+#include "Cli.h"
+
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
-#include <map>
 #include <vector>
 
 namespace
 {
 
-struct Args
-{
-    std::map<juce::String, juce::String> options;
-    juce::StringArray positional;
-
-    double value (const char* flag, double fallback) const
-    {
-        const auto it = options.find (flag);
-        if (it == options.end() || it->second.isEmpty())
-            return fallback;
-        return it->second.getDoubleValue();
-    }
-};
-
-Args parseArgs (int argc, char* argv[])
-{
-    Args out;
-    std::vector<juce::String> raw;
-    for (int i = 1; i < argc; ++i)
-        raw.emplace_back (juce::CharPointer_UTF8 (argv[i]));
-
-    for (size_t i = 0; i < raw.size(); ++i)
-    {
-        if (! raw[i].startsWith ("--"))
-        {
-            out.positional.add (raw[i]);
-            continue;
-        }
-        auto key = raw[i];
-        juce::String value;
-        if (key.containsChar ('='))
-        {
-            value = key.fromFirstOccurrenceOf ("=", false, false);
-            key = key.upToFirstOccurrenceOf ("=", false, false);
-        }
-        else if (i + 1 < raw.size() && ! raw[i + 1].startsWith ("--"))
-        {
-            value = raw[++i];
-        }
-        out.options[key] = value;
-    }
-    return out;
-}
+using autosynth::cli::Args;
 
 juce::var toVar (const std::vector<float>& values)
 {
@@ -88,18 +47,16 @@ juce::var toVar (const std::vector<float>& values)
 
 } // namespace
 
-int main (int argc, char* argv[])
+int runProbe (const Args& args)
 {
-    const auto args = parseArgs (argc, argv);
     if (args.positional.isEmpty())
     {
-        std::fprintf (stderr, "usage: autosynth_probe <input.wav> [--hop n] [--fft n] "
-                              "[--patch out.json] [--vital out.vital]\n");
+        std::fprintf (stderr, "usage: autosynth probe <input.wav> [--hop n] [--fft n] "
+                              "[--patch out.json]\n");
         return 2;
     }
 
-    const juce::File input (juce::File::getCurrentWorkingDirectory()
-                                .getChildFile (args.positional[0]));
+    const auto input = args.file (0);
     if (! input.existsAsFile())
     {
         std::fprintf (stderr, "error: no such file: %s\n", input.getFullPathName().toRawUTF8());
@@ -285,13 +242,13 @@ int main (int argc, char* argv[])
 
     // No renderer here, and so no refinement and no level calibration: both are
     // closed loops around a synth, and the synth is Vital, which
-    // `autosynth_vital --fit` hosts and this does not. This stays what it has
-    // always been -- the deterministic half, which is what the golden fixtures
-    // pin and what a stage-by-stage comparison needs.
+    // `autosynth fit` hosts and this does not. This stays what it has always
+    // been -- the deterministic half, which is what the golden fixtures pin and
+    // what a stage-by-stage comparison needs.
     //
     // The patch written below is therefore an *analysis* result, not a finished
     // fit: oscillator levels are whatever the factorisation left and the noise
-    // bed is zero. For a preset to listen to, use `autosynth_vital --fit`.
+    // bed is zero. For a preset to listen to, use `autosynth fit`.
     const auto finalPatch = fitted;
 
     // Write the fitted patch out, so a real sample can be taken end to end from
@@ -308,18 +265,12 @@ int main (int argc, char* argv[])
                           out.getFullPathName().toRawUTF8());
     }
 
-    // ...and the same patch as a Vital preset, which is the whole argument for
-    // the IR: sample in, someone else's synth out, with nothing of ours in
-    // between but a description.
-    if (const auto it = args.options.find ("--vital"); it != args.options.end()
-        && it->second.isNotEmpty())
-    {
-        const juce::File vitalOut (juce::File::getCurrentWorkingDirectory()
-                                       .getChildFile (it->second));
-        juce::String error;
-        if (! autosynth::VitalExport::writeTo (finalPatch, vitalOut, &error))
-            std::fprintf (stderr, "warning: %s\n", error.toRawUTF8());
-    }
+    // No preset from here. This used to write one, and it was a trap: the patch
+    // above has had no renderer, so its levels are whatever the factorisation
+    // left and its noise bed is zero. It is the right thing to diff a stage
+    // against and the wrong thing to listen to, and having two ways to get a
+    // preset with only one of them finished is how someone ends up judging the
+    // project by the unfinished one. `autosynth fit` is the way.
 
     const auto trajectories = autosynth::Modulation::extract (samples, numSamples, sampleRate, hop);
     const auto lfo = autosynth::Modulation::best (trajectories);

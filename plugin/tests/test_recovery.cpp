@@ -1,7 +1,7 @@
 // The ground-truth recovery harness itself.
 //
 // These are cheap guards on the measurement, not the measurement. The real
-// numbers come from `autosynth_vital --eval`, which is slow enough that running
+// numbers come from `autosynth eval`, which is slow enough that running
 // it in the test suite would make the suite useless. What is asserted here is that
 // the harness still measures something: that the fitter beats the control, and
 // that the scoring cannot silently degrade into comparing a signal with itself.

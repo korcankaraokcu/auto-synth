@@ -43,7 +43,7 @@ other -- and pointing the test suite at Vital immediately found four export
 defects that had been shipping, including a preset driven 12 dB into Vital's own
 limiter.
 
-How good is the result? `autosynth_diff` reports eleven named axes, and on two
+How good is the result? `autosynth diff` reports eleven named axes, and on two
 instrument recordings a fit lands four to eight of them inside tolerance
 depending on the draw -- the search is stochastic, and the same recording fitted
 from two seeds is not the same preset. Pitch, attack, note-off and level are
@@ -58,6 +58,42 @@ them.
 
 Not started: exporters to other synths, and stereo.
 
+## Use
+
+One file: `autosynth.exe` from the releases tab. Nothing else to install, and no
+runtime to go with it.
+
+```powershell
+autosynth fit your-recording.wav
+```
+
+Any mono `.wav` of a single sustained note will do. That writes
+`your-recording.vital` next to it; open it in Vital and start turning knobs.
+`--preset`, `--patch` and `--render` name the preset, the intermediate patch and
+an audio rendering of the fit if you want them somewhere else.
+
+[Vital](https://vital.audio/) must be installed -- the free version is enough --
+because it *is* the synth here: the fitter renders every candidate through it.
+No Vital code is compiled or shipped in this repository; the tool hosts whatever
+VST3 it finds in the platform's plug-in folders, so the preset is fitted against
+the version it will be opened in.
+
+The other verbs are there for looking at what happened. `autosynth` on its own
+lists them:
+
+| Verb | |
+|---|---|
+| `fit` | recording in, preset out. The one you want |
+| `diff` | how far two recordings are apart, on eleven named axes |
+| `render` | play a fitted patch through Vital and write the audio |
+| `probe` | every analysis stage as JSON |
+| `score` | what the fitting objective makes of a patch, term by term |
+| `eval` | how good is the fitter, against patches whose answers are known |
+| `selftest` | does rendering repeat, and which parameters move the sound |
+
+Windows only for now -- Linux and macOS are not supported yet, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Build
 
 Windows, with the Visual Studio C++ build tools and CMake:
@@ -66,26 +102,12 @@ Windows, with the Visual Studio C++ build tools and CMake:
 .\scripts\bootstrap.ps1
 ```
 
-That configures, builds the tools and runs the tests.
-[Vital](https://vital.audio/) must be installed -- the free version is enough --
-because it is the synth: it renders the fit, and the test cases that need sound
-are skipped without it.
+That configures, builds the tool and runs the tests. There is a recording in the
+repository to try it on, a two-second tremolo the test suite uses:
 
 ```powershell
-autosynth_vital fitted.json out.wav --fit your-recording.wav --preset out.vital
+autosynth fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital
 ```
-
-Any mono `.wav` of a single sustained note will do. There is one in the
-repository to try it on, a two-second tremolo used by the test suite:
-
-```powershell
-autosynth_vital fitted.json out.wav --fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital
-```
-
-No Vital code is compiled or shipped here; the tool hosts whatever VST3 it
-finds in the platform's plug-in folders.
-
-Linux and macOS are not supported yet -- see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

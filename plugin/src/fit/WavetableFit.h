@@ -51,7 +51,7 @@ struct Result
     double frameError = 0.0;    // three tables and a sweeping position
 
     // How far the tone travels, in decibels, measured the same way
-    // `autosynth_diff` measures it.
+    // `autosynth diff` measures it.
     double driftDb = 0.0;
 };
 

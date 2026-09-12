@@ -6,6 +6,17 @@ project(AutoSynth VERSION 0.0.1 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The C++ runtime is linked in rather than loaded from the machine.
+#
+# So that a release is one file. Linked the default way the tools import
+# msvcp140.dll, which arrives with the Visual C++ redistributable -- present on
+# most Windows machines and not all, and its absence is a dialog box on launch
+# rather than a message anyone can act on. The rest of what they import is the
+# Universal CRT and the system DLLs, which Windows 10 has by definition.
+#
+# It costs about a megabyte on an eight megabyte binary.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # JUCE is fetched rather than vendored: nothing to check in, and the version is
 # pinned here so a fresh clone builds the same thing. 8.0.15 is the settled 8.x
 # line; JUCE has no LTS track, and 9.0.0 is too new to adopt for no gain.
@@ -52,30 +63,6 @@ target_link_libraries(autosynth_dsp
     PRIVATE juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(autosynth_dsp PUBLIC JUCE_STANDALONE_APPLICATION=0)
 
-# --------------------------------------------------------------------------
-# Analysis probe: WAV in, intermediates out as JSON. Analysis produces no audio
-# to compare, so the port is validated by dumping each stage and diffing it
-# against the Python implementation element-wise.
-# --------------------------------------------------------------------------
-juce_add_console_app(autosynth_probe PRODUCT_NAME "autosynth_probe")
-target_sources(autosynth_probe PRIVATE tools/probe_main.cpp)
-target_link_libraries(autosynth_probe
-    PRIVATE autosynth_dsp juce::juce_audio_formats
-    PUBLIC juce::juce_recommended_config_flags)
-
-# --------------------------------------------------------------------------
-# Fit diagnosis: why does the fit not sound like the target?
-#
-# A single distance number cannot say, and can mislead -- envelope distance
-# rated a hissing violin better than a good clarinet. This reports the
-# difference on axes a person can name and a parameter can fix.
-# --------------------------------------------------------------------------
-juce_add_console_app(autosynth_diff PRODUCT_NAME "autosynth_diff")
-target_sources(autosynth_diff PRIVATE tools/diff_main.cpp)
-target_link_libraries(autosynth_diff
-    PRIVATE autosynth_dsp juce::juce_audio_formats
-    PUBLIC juce::juce_recommended_config_flags)
-
 # The switches that turn JUCE into a plug-in host, shared with the test suite
 # because it renders the same way.
 set(AUTOSYNTH_HOST_DEFINITIONS
@@ -87,21 +74,32 @@ set(AUTOSYNTH_HOST_DEFINITIONS
     JUCE_USE_CURL=0)
 
 # --------------------------------------------------------------------------
-# Render, fit and evaluate through Vital itself.
+# The tool. One binary, one name, a verb to say what the arguments mean.
 #
-# This hosts the installed VST3 and hands it the exported JSON directly --
+# It was three -- a probe, a diff and a renderer -- and they were separate for
+# no better reason than having been written on different days. They share a
+# static library, a command line and, once the engine went, a purpose: every one
+# of them is a way of asking how close a preset is to a recording. A release
+# that is one download is the visible half of the reason; the other half is that
+# the renderer had grown six modes sharing two positional arguments, and a verb
+# is the only thing that fixes that.
+#
+# It hosts the installed Vital and hands it the exported JSON directly --
 # Vital's plug-in state chunk is the preset format -- so what it renders is the
-# preset a user would open, not a re-encoding of it. That makes it the renderer
-# for everything that needs sound: `--fit` refines against it and `--eval` runs
-# the ground-truth recovery harness through it.
+# preset a user would open, not a re-encoding of it. It links no Vital code and
+# ships none.
 #
-# It links no Vital code and ships none: the plug-in is whatever the user has
-# installed, which is also the version their presets will be opened in.
+# The host opens on demand, so `diff` and `probe`, which make no sound, work on
+# a machine that has never had Vital installed.
 # --------------------------------------------------------------------------
-juce_add_console_app(autosynth_vital PRODUCT_NAME "autosynth_vital")
-target_sources(autosynth_vital PRIVATE tools/vital_main.cpp)
-target_compile_definitions(autosynth_vital PRIVATE ${AUTOSYNTH_HOST_DEFINITIONS})
-target_link_libraries(autosynth_vital
+juce_add_console_app(autosynth PRODUCT_NAME "autosynth")
+target_sources(autosynth PRIVATE
+    tools/main.cpp
+    tools/probe_main.cpp
+    tools/diff_main.cpp
+    tools/vital_main.cpp)
+target_compile_definitions(autosynth PRIVATE ${AUTOSYNTH_HOST_DEFINITIONS})
+target_link_libraries(autosynth
     PRIVATE autosynth_dsp
             juce::juce_audio_processors
             juce::juce_audio_formats

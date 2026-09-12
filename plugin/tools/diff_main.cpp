@@ -10,7 +10,7 @@
 // tail -- and says which way each one is wrong.
 //
 // Usage:
-//   autosynth_diff target.wav fit.wav [--hop 256] [--fft 2048]
+//   autosynth diff target.wav fit.wav [--hop 256] [--fft 2048]
 
 #include "analysis/Grouping.h"
 #include "analysis/Partials.h"
@@ -19,85 +19,20 @@
 #include "fit/EnvelopeFit.h"
 #include "fit/Modulation.h"
 
+#include "Cli.h"
+
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <map>
 #include <vector>
 
 namespace
 {
 
-struct Args
-{
-    std::map<juce::String, juce::String> options;
-    juce::StringArray positional;
-
-    double value (const char* flag, double fallback) const
-    {
-        const auto it = options.find (flag);
-        if (it == options.end() || it->second.isEmpty())
-            return fallback;
-        return it->second.getDoubleValue();
-    }
-};
-
-Args parseArgs (int argc, char* argv[])
-{
-    Args out;
-    juce::StringArray raw;
-    for (int i = 1; i < argc; ++i)
-        raw.add (juce::String (argv[i]));
-
-    for (int i = 0; i < raw.size(); ++i)
-    {
-        if (! raw[i].startsWith ("--"))
-        {
-            out.positional.add (raw[i]);
-            continue;
-        }
-        auto key = raw[i];
-        juce::String value;
-        if (key.containsChar ('='))
-        {
-            value = key.fromFirstOccurrenceOf ("=", false, false);
-            key = key.upToFirstOccurrenceOf ("=", false, false);
-        }
-        else if (i + 1 < raw.size() && ! raw[i + 1].startsWith ("--"))
-        {
-            value = raw[++i];
-        }
-        out.options[key] = value;
-    }
-    return out;
-}
-
-std::vector<float> readMono (const juce::File& file, double& sampleRateOut)
-{
-    juce::AudioFormatManager formats;
-    formats.registerBasicFormats();
-    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
-    if (reader == nullptr)
-        return {};
-
-    const auto numSamples = static_cast<int> (reader->lengthInSamples);
-    juce::AudioBuffer<float> buffer (static_cast<int> (reader->numChannels),
-                                     juce::jmax (1, numSamples));
-    reader->read (&buffer, 0, numSamples, 0, true, true);
-
-    if (buffer.getNumChannels() > 1)
-    {
-        for (int ch = 1; ch < buffer.getNumChannels(); ++ch)
-            buffer.addFrom (0, 0, buffer, ch, 0, numSamples);
-        buffer.applyGain (0, 0, numSamples, 1.0f / buffer.getNumChannels());
-    }
-    sampleRateOut = reader->sampleRate;
-    const auto* data = buffer.getReadPointer (0);
-    return std::vector<float> (data, data + numSamples);
-}
+using autosynth::cli::Args;
 
 // --- the measurements ------------------------------------------------------
 
@@ -444,12 +379,11 @@ juce::String verdictFor (double target, double fit, double tolerance,
 
 } // namespace
 
-int main (int argc, char* argv[])
+int runDiff (const Args& args)
 {
-    const auto args = parseArgs (argc, argv);
     if (args.positional.size() < 2)
     {
-        std::fprintf (stderr, "usage: autosynth_diff <target.wav> <fit.wav> "
+        std::fprintf (stderr, "usage: autosynth diff <target.wav> <fit.wav> "
                               "[--hop n] [--fft n]\n");
         return 2;
     }
@@ -457,10 +391,9 @@ int main (int argc, char* argv[])
     const auto hop = static_cast<int> (args.value ("--hop", 256.0));
     const auto fft = static_cast<int> (args.value ("--fft", 2048.0));
 
-    const auto cwd = juce::File::getCurrentWorkingDirectory();
     double targetRate = 0.0, fitRate = 0.0;
-    const auto target = readMono (cwd.getChildFile (args.positional[0]), targetRate);
-    const auto fit = readMono (cwd.getChildFile (args.positional[1]), fitRate);
+    const auto target = autosynth::cli::readMono (args.file (0), targetRate);
+    const auto fit = autosynth::cli::readMono (args.file (1), fitRate);
 
     if (target.empty() || fit.empty())
     {

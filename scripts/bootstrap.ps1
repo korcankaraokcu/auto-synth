@@ -88,7 +88,7 @@ if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 
 # --- build ----------------------------------------------------------------
 
-$targets = @('autosynth_probe', 'autosynth_diff', 'autosynth_vital')
+$targets = @('autosynth')
 if (-not $SkipTests) {
     $targets += 'autosynth_tests'
 }
@@ -108,9 +108,7 @@ if (-not $SkipTests) {
 # --- summary --------------------------------------------------------------
 
 Write-Step 'Done'
-foreach ($tool in $targets) {
-    if ($tool -eq 'autosynth_tests') { continue }
-    Write-Host "    $tool : $(Join-Path $buildDir "${tool}_artefacts\$Config\$tool.exe")"
-}
+Write-Host "    $(Join-Path $buildDir "autosynth_artefacts\$Config\autosynth.exe")"
+Write-Host '    Run it with a verb: fit, diff, render, probe, score, eval, selftest.'
 Write-Host ''
 Write-Host '    Vital must be installed: it is the synth, and the test suite renders through it.'

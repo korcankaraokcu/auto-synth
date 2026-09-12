@@ -31,7 +31,7 @@ namespace autosynth
 // smeared harmonics as noise, and chasing it means adding hiss to imitate
 // smearing.
 //
-// `autosynth_diff` reports the same quantity as "noisiness" through this same
+// `autosynth diff` reports the same quantity as "noisiness" through this same
 // function: a diagnostic that says a fit is too clean and a fitter deciding how
 // much noise to allow have to be measuring the same thing.
 class Roles

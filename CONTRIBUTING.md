@@ -48,24 +48,31 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 |---|---|
 | `autosynth_dsp` | Static library: analysis, fitting and the exporter. Everything else links it. |
 | `autosynth_tests` | The test suite |
-| `autosynth_probe` | Analysis probe — WAV in, every intermediate stage out as JSON |
-| `autosynth_diff` | A/B diagnosis — two WAVs in, the difference on named axes out |
-| `autosynth_vital` | Renders, fits and evaluates through the installed Vital VST3 |
+| `autosynth` | Everything a person runs, behind a verb: `fit`, `diff`, `render`, `probe`, `score`, `eval`, `selftest` |
 
 There is no synth here, and no plug-in. Both were removed once the deliverable
 became a preset rather than a sound: a synth of our own is a thing to keep in
 step with Vital, keeping two in step was itself producing bugs, and every bound
 the suite asserted was a bound on a program nobody runs.
 
-`autosynth_vital` is therefore the only thing that makes sound. It links none of
+`autosynth` is therefore the only thing that makes sound. It links none of
 Vital's code and hosts whatever VST3 the platform's standard locations hold,
 unless `--plugin` says otherwise — deliberately the version the presets will
 actually be opened in. `src/vital/VitalHost.h` is the whole of the hosting, and
 the test suite shares it so that both drive the plug-in the same way.
 
+The verbs were three separate executables until the arguments stopped meaning
+anything on their own: `<patch.json> <out.wav>` was an input and an output,
+unless `--fit` was passed, in which case the first became an output too, unless
+`--eval` was passed, in which case neither was read at all — six modes sharing
+two positional slots, each bolted on after the last. A verb says what the
+arguments are before they are read, and a release becomes one file to download.
+The test suite stays its own binary: Catch2 owns a command line of its own, and
+the golden fixtures it needs are in the repository rather than in the download.
+
 ```
-autosynth_vital fitted.json out.wav --fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital
-autosynth_diff  plugin/tests/golden/analysis/lfo_amp.wav out.wav
+autosynth fit plugin/tests/golden/analysis/lfo_amp.wav --preset out.vital --render out.wav
+autosynth diff plugin/tests/golden/analysis/lfo_amp.wav out.wav
 ```
 
 Any mono `.wav` of one sustained note works; that one is a test fixture, so it
@@ -74,19 +81,19 @@ not: they are library material that cannot be redistributed, so the numbers
 below can be read but not re-run against the same audio. Nothing in the build or
 the suite depends on them.
 
-`autosynth_probe --patch` writes a patch too, but an *analysis* one: it has no
+`autosynth probe --patch` writes a patch too, but an *analysis* one: it has no
 renderer, so the levels are whatever the factorisation left and the noise bed is
 zero. That is the right thing for a stage-by-stage comparison and the wrong
 thing to listen to.
 
-Two further modes do what used to need an engine of our own: `--fit target.wav`
-runs the fitter with Vital rendering every candidate, and `--eval` runs the
-ground-truth recovery harness inside Vital — random patches rendered by Vital as
-the targets, and the control and every candidate rendered there too.
+Two verbs do what used to need an engine of our own: `fit` runs the fitter with
+Vital rendering every candidate, and `eval` runs the ground-truth recovery
+harness inside Vital — random patches rendered by Vital as the targets, and the
+control and every candidate rendered there too.
 
 ```
-autosynth_vital fitted.json out.wav --fit recording.wav --dur 4 --gate 3
-autosynth_vital --eval --trials 12 --seed 0
+autosynth fit recording.wav --patch fitted.json --render out.wav --dur 4 --gate 3
+autosynth eval --trials 12 --seed 0
 ```
 
 ### Known build traps
@@ -94,13 +101,13 @@ autosynth_vital --eval --trials 12 --seed 0
 - **Build the configuration you intend to test.** Building `RelWithDebInfo`
   while running a `Release` binary means a fixed bug keeps reproducing. This
   cost an afternoon once.
-- **Rebuild *every* tool you are about to measure with.** The same trap in a
-  second costume: after changing the envelope fitter, `autosynth_probe` and
-  `autosynth_tests` were rebuilt but the harness was not, so a "baseline" was
-  recorded from a binary predating the change. An hour then went into bisecting
-  a regression that was really a comparison against the wrong build.
-  `.\scripts\bootstrap.ps1` builds all of them, which is the reason to prefer it
-  over hand-picked targets.
+- **Rebuild *every* binary you are about to measure with.** The same trap in a
+  second costume: back when the tools were several executables, a change to the
+  envelope fitter went into the probe and the test suite but not the harness, so
+  a "baseline" was recorded from a binary predating the change. An hour then
+  went into bisecting a regression that was really a comparison against the
+  wrong build. One binary makes this harder to do, and
+  `.\scripts\bootstrap.ps1` builds it and the suite together.
 - **Keep the checkout path short on Windows.** JUCE's repository contains very
   deep paths of its own (iOS demo assets nested a dozen levels down), and with
   `MAX_PATH` at 260 characters the *fetch* fails before anything is compiled --
@@ -237,7 +244,7 @@ stage of the analysis chain was validated against it element-wise, and that
 reference was then removed once the port was complete.
 
 `plugin/tests/golden/analysis/` is what remains: an input signal and the full
-analysis report the reference produced, mirroring the schema `autosynth_probe`
+analysis report the reference produced, mirroring the schema `autosynth probe`
 emits, so the two can be compared field by field. The reference implementation
 is gone, but the evidence it produced is not.
 
@@ -314,7 +321,7 @@ These drove design decisions and are cheaper to read than to rediscover.
 ### Measuring the fitter
 
 ```
-autosynth_vital --eval --trials 24 --seed 0
+autosynth eval --trials 24 --seed 0
 ```
 
 24 trials, seed 0, current IR. Both columns face the *same* targets, so this is
@@ -634,8 +641,8 @@ needs the other synth {d} and the gap is structural rather than incidental:
 refinement optimises against this engine and the file is then played by a
 different one.
 
-`autosynth_vital` hosts the installed VST3 and renders the exported preset, so
-the gap becomes an ordinary `autosynth_diff`. It links no Vital code and ships
+`autosynth` hosts the installed VST3 and renders the exported preset, so
+the gap becomes an ordinary `autosynth diff`. It links no Vital code and ships
 none. It renders whichever build is installed, which is also the build the
 presets will be opened in {d} a submodule would render the public source drop,
 which is not necessarily the same engine.
@@ -822,7 +829,7 @@ conditions from the other hundred and ninety-one. One discarded render at the
 start makes them alike.
 
 What remains is a random LFO where a patch has one -- 0.12 dB on the violin,
-random by construction -- and `--check-repeatable` reports it, because an
+random by construction -- and `autosynth selftest` reports it, because an
 objective that answers differently for the same patch reads as a search that
 cannot converge and there is nothing in a rendered note that says so.
 
@@ -844,7 +851,7 @@ speed. Recorded here so the next person does not have to re-derive it.
 
 ### Two axes the diagnostic did not have
 
-Every axis in `autosynth_diff` was shape-relative: each signal normalised by its
+Every axis in `autosynth diff` was shape-relative: each signal normalised by its
 own peak or its own profile before being compared. So all of them could read in
 tolerance while a preset lost two thirds of its level after the attack, which is
 exactly what happened -- a listener heard the peak stand out as a surge and the
@@ -1028,7 +1035,7 @@ thing being minimised was not the thing wanted.
 
 Spectral, loudness and centroid distances are all averages over frames. A model
 can match every one of them and still get the *shape* of the note wrong.
-Meanwhile `autosynth_diff` measures eleven named axes whose verdicts have agreed
+Meanwhile `autosynth diff` measures eleven named axes whose verdicts have agreed
 with a listener repeatedly, and the objective was using none of them.
 
 So three of them are now inside it: the attack in seconds, the harmonic movement
@@ -1078,7 +1085,7 @@ needing to be found and hand-corrected in the exporter.
 
 `Refine::Options::renderer` is how: a callback that turns a candidate patch into
 mono samples. Nothing in `autosynth_dsp` learns about plug-in hosting; whoever
-owns the synth owns the renderer, and `autosynth_vital` supplies one backed by
+owns the synth owns the renderer, and `autosynth` supplies one backed by
 Vital. It has no default -- with no renderer, refinement returns the patch it
 was given rather than optimising against a synth nobody will play.
 
@@ -1119,7 +1126,7 @@ settle is that the mechanism works and what it costs, which is what it was for.
 
 ### The harness in Vital's world, and the gap it found
 
-`Recovery::Options::renderer` takes the same shape, and `autosynth_vital --eval`
+`Recovery::Options::renderer` takes the same shape, and `autosynth eval`
 supplies it. When set it replaces *every* render -- target, fitted, control and
 each refinement candidate -- so random patches rendered by Vital become the
 targets. That is all-or-nothing on purpose: rendering the target in one synth
@@ -1310,7 +1317,7 @@ them changes nothing there, and the violin was measured long ago as landing in
 the same place with frames forced on. Building it anyway would have been adding
 a criterion on faith.
 
-**Where the drift actually lives.** `autosynth_diff` now breaks the number down
+**Where the drift actually lives.** `autosynth diff` now breaks the number down
 by harmonic, because a single figure saying the tone moves says nothing about
 what moves, and four attempts had been aimed at a quantity nobody could point
 to. On the clarinet, late third minus early third:
@@ -1490,7 +1497,7 @@ nothing, or routed somewhere the signal never reaches, or sits on a page Vital
 ignores. Both look identical from this side of the boundary, and only one of
 them can be heard.
 
-`autosynth_vital --sweep` moves each parameter in `Refine::scopeFor` to the far
+`autosynth selftest` moves each parameter in `Refine::scopeFor` to the far
 end of its declared range, plays the result through Vital, and reports the
 spectral distance from the unmoved patch. The answer is that nothing is inert.
 The weakest, an oscillator's envelope curve, still moves the output by 0.118,
@@ -1515,7 +1522,7 @@ carries a too-fast attack faithfully; the attack is fitted short.
 The cause is a mismatch of signals rather than of numbers. `attackMeasuring`
 solves the attack parameter whose *envelope* measures back as the target's
 attack, which is the right idea against the wrong signal: what a listener hears,
-and what `autosynth_diff` measures, is the loudness contour of the finished
+and what `autosynth diff` measures, is the loudness contour of the finished
 audio, and that also carries the filter envelope, the reverb and the
 oscillator's own onset. On the clarinet the filter envelope opens over 1.4
 seconds, so the rendered rise is slower than the amplitude envelope alone
@@ -1602,7 +1609,7 @@ stripped the bow off it.
 
 `calibrateNoise` closes the loop instead: render, measure the energy between the
 harmonics, scale, repeat. Two or three passes, against the same quantity
-`autosynth_diff` prints as noisiness, so the number is stable under changes that
+`autosynth diff` prints as noisiness, so the number is stable under changes that
 have nothing to do with it.
 
 Two guards, both of which cost measurements to find:
@@ -1640,7 +1647,7 @@ period cycle by cycle and reports how far that period drifts, in octaves.
 | amp LFO period drift | 0.81 octaves over 22 cycles | **0.08** over 10 |
 
 A player's wobble period wanders by most of an octave. Ours is a metronome, by a
-factor of ten to twenty. `autosynth_diff` reports it next to every detected
+factor of ten to twenty. `autosynth diff` reports it next to every detected
 modulation, and the measurement is only trustworthy where the modulation is
 strong {d} on the clarinet, whose modulation is weak, the same estimator reads
 0.4 to 0.8 octaves on a signal we know to be a pure sine, which is noise.
@@ -1700,7 +1707,7 @@ of noise at the start of the note that then dissolved.
 
 That one is worth dwelling on, because every measurement available said the fit
 was *fine*. Its inter-harmonic noise was lower than the target's at every point
-in the note (0.035 to 0.050 against 0.055 to 0.065), so `autosynth_diff`
+in the note (0.035 to 0.050 against 0.055 to 0.065), so `autosynth diff`
 reported "cleaner" and nothing else. What it did show, once read in
 quarter-second windows, was brightness overshooting from 0.3 s onward — 1052 Hz
 against the recording's 861, growing to 1189 against 917. An over-opened filter
@@ -1866,7 +1873,7 @@ takes the energy sitting *between* the harmonics of the fitted fundamental. That
 is the distinction spectral flatness cannot make: broadband noise lifts the
 floor between partials, while a partial wandering with vibrato stays near its
 own harmonic. It reads 0.29 on the violin and 0.06 on the clarinet, at any
-window, and `autosynth_diff` reports the same quantity through the same function
+window, and `autosynth diff` reports the same quantity through the same function
 so the diagnostic and the fitter cannot drift apart.
 
 That number now sets the noise ceiling, which used to be a constant. A fixed
@@ -2038,7 +2045,7 @@ were each killed by measurement. This wants either an LFO whose rate and depth
 drift, or a periodicity statistic better than the concentration of a
 periodogram. It is on the roadmap as its own item.
 
-What *was* wrong was the diagnostic. `autosynth_diff` had its own wobble-rate
+What *was* wrong was the diagnostic. `autosynth diff` had its own wobble-rate
 estimator — smooth, then count sign changes — and the smoothing that makes
 crossing-counting usable is also a low-pass, so it read a pure 3.31 Hz sine as
 2.8 Hz. It now calls `Modulation::dominantRateHz`, the same estimator the fitter
@@ -2271,7 +2278,7 @@ a second either side separated them cleanly: 0.025 against 0.019 rather than
 0.0684 against 0.0627.
 
 **The third rung needs an absolute floor, and it is stated in decibels.** It is
-the same number `autosynth_diff` prints as timbre drift, computed the same way,
+the same number `autosynth diff` prints as timbre drift, computed the same way,
 because a diagnostic that says a fit is too static and a fitter that decides
 whether to fix it must be measuring the same quantity. The threshold sits at
 1.5 dB on evidence rather than taste: forced on regardless, the clarinet's
@@ -2383,7 +2390,7 @@ tests that proved they worked.
 
 There was a fifth defect, and this file's own change caused it. Threading a
 renderer through analysis made level and noise calibration conditional on being
-given one, and `autosynth_vital --fit` was given one for refinement and not for
+given one, and `autosynth fit` was given one for refinement and not for
 the fit — so both calibrations silently did nothing. What comes back looks like
 a fit the whole way: oscillators, envelope, filter, all populated, with the
 oscillator levels the factorisation happened to leave and the noise bed at zero.
@@ -2395,7 +2402,7 @@ tolerance, and the violin's noisiness goes to 0.228.
 
 That is the shape of the whole section, one more time. A closed loop that
 quietly becomes no loop reports success, so `a fit without a renderer is
-visibly unfinished` now pins the two states apart, and `autosynth_vital` builds
+visibly unfinished` now pins the two states apart, and `autosynth` builds
 one renderer and hands that same object to everything rather than one per call
 site.
 
@@ -2460,11 +2467,12 @@ a test that compared a number against something absolute.
 The level being *reachable* did not make it *reliable*. Fitted from three seeds,
 one clarinet came back 6.9 dB quiet, correct, and correct again — and
 `sustain vs peak` was out on all three, by 1.8, 6.0 and 6.1 dB. A fit is one
-sample of a search, so `--seed` is now on `--fit` and a change that moves one
+sample of a search, so `--seed` is now on `fit` and a change that moves one
 axis is read against that spread rather than against one run.
 
-`--score` answers the question a single total cannot: given a patch that came
-out quiet, did the objective *prefer* it, or did the search miss the loud one?
+`autosynth score` answers the question a single total cannot: given a patch that
+came out quiet, did the objective *prefer* it, or did the search miss the loud
+one?
 Those need opposite fixes. Scoring the quiet fit against hand-corrected copies
 of itself settled it in four renders — raising the master made the loudness term
 *worse*, 5.78 dB to 11.96, so the objective preferred the quiet patch and was
@@ -2531,7 +2539,7 @@ Refinement, free to move it, agrees. Both are right, because 1.0 is the best
 single shape available for a rise that is not one shape.
 
 **The rise is not monotonic, and an ADSR attack is.** This is the whole of it,
-and `autosynth_diff` now prints it rather than leaving it to a bespoke script:
+and `autosynth diff` now prints it rather than leaving it to a bespoke script:
 
 ```
   the rise (fraction of the loudest frame)
@@ -2831,8 +2839,8 @@ its own phase.
 
 ### Restore what the Python removal cost
 
-- ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth_vital
-  --eval`, see [Measuring the fitter](#measuring-the-fitter).
+- ~~Port the ground-truth recovery harness.~~ **Done** — `autosynth eval`,
+  see [Measuring the fitter](#measuring-the-fitter).
 - ~~Port NMF rank selection.~~ **Done** — `src/fit/Nmf.cpp`, and unlike the
   Python original it *is* on the shipped path: run per harmonic group rather
   than globally, which is the placement that makes it answerable.
@@ -2871,7 +2879,7 @@ At ~33% exact, this is the ceiling on everything else.
 ### Modulation and effects
 
 - ~~Measure how mechanical an LFO is.~~ **Done** — `Modulation::detectWander`,
-  reported by `autosynth_diff`, see
+  reported by `autosynth diff`, see
   [Wander](#wander-measuring-how-mechanical-an-lfo-is). The engine can chain
   LFOs; what the fitter lacks is a slot to spend on one. **Next:** either a
   third slot with the harness re-baselined deliberately, or a rule for when a
@@ -2982,8 +2990,8 @@ waits until after the exporter.
   rather than by loosening them.
 - **macOS support.** Same shape as Linux, plus AU packaging and code signing.
 - ~~Exporters.~~ **Working, and now the only output** — `VitalExport`, written
-  by `autosynth_probe --vital out.vital` and `autosynth_vital --preset`, checked
-  against Vital's own parameter declarations and against the plug-in itself. See
+  by `autosynth fit --preset`, checked against Vital's own parameter
+  declarations and against the plug-in itself. See
   [Exporting to Vital](#exporting-to-vital).
 - **Stereo.** Rendering is easy. *Fitting* is a separate project: the analysis
   chain is mono by construction, and the IR has no pan or unison stereo spread,

@@ -118,7 +118,7 @@ inline std::vector<float> render (const autosynth::Patch& patch,
 
     auto out = vital().render (patch, noteHz > 0.0 ? noteHz : patch.rootHz, duration, gate);
 
-    // Peak-limit, matching autosynth_vital. Without this a patch that clips
+    // Peak-limit, matching the tool. Without this a patch that clips
     // would be compared against a reference that did not.
     float peak = 0.0f;
     for (auto v : out)
